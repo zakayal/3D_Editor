@@ -40,7 +40,7 @@ export class ScaleBarTool extends BaseTool implements ITool {
         this.initPreview();
         
         if (this.previewScaleBar) {
-            (this.previewScaleBar as THREE.Object3D).visible = false;
+            (this.previewScaleBar as THREE.Group).visible = false;
         }
         this.eventEmitter.emit('modeChanged', { mode: ToolMode.ScaleBar, enabled: true });
     }
@@ -49,7 +49,7 @@ export class ScaleBarTool extends BaseTool implements ITool {
         console.log("ScaleBarTool deactivated.");
         this.sceneController.orbitControls.enabled = true; // 恢复相机控制
         if (this.previewScaleBar) {
-            (this.previewScaleBar as THREE.Object3D).visible = false;
+            this.previewScaleBar.visible = false;
             this.isPreviewVisible = false;
         }
         this.eventEmitter.emit('modeChanged', { mode: ToolMode.ScaleBar, enabled: false });
@@ -64,7 +64,7 @@ export class ScaleBarTool extends BaseTool implements ITool {
         }
         
         // 深度克隆模型以避免对原始模型的影响
-        this.previewScaleBar = baseModel.clone() as THREE.Group;
+        this.previewScaleBar = baseModel.clone();
         this.previewScaleBar.visible = false;
         
         // 优化材质处理：使用原始材质的副本而不是可能已被修改的材质
@@ -139,11 +139,16 @@ export class ScaleBarTool extends BaseTool implements ITool {
             }
 
             this.updatePreviewPosition(event.intersection);
+            
+            // 强制渲染以确保预览效果显示
+            this.sceneController.forceRender();
 
         } else {
             if (this.isPreviewVisible) {
                 this.previewScaleBar.visible = false;
                 this.isPreviewVisible = false;
+                // 强制渲染以确保预览隐藏生效
+                this.sceneController.forceRender();
             }
         }
     }
@@ -158,6 +163,9 @@ export class ScaleBarTool extends BaseTool implements ITool {
 
         // 更新预览姿态，使用存储的表面点位置而不是当前比例尺位置
         this.updatePreviewTransform(this.currentSurfacePoint);
+        
+        // 强制渲染以确保旋转预览效果显示
+        this.sceneController.forceRender();
     }
 
     onPointerDown(event: InteractionEvent): void {

@@ -1,6 +1,6 @@
 //@ts-ignore
 import * as THREE from 'three';
-import { BaseTool, ITool } from '../../Components/Base-tools/BaseTool';
+import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
 import { InteractionEvent, ToolMode, SurfaceMeasurementAnnotation, ISceneController, IAnnotationManager, IDijkstraService, IEventEmitter } from '../../types/webgl-marking'; // 导入接口
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';

@@ -2,7 +2,7 @@
 
 //@ts-ignore
 import * as THREE from 'three';
-import { BaseTool, ITool } from '../../Components/Base-tools/BaseTool';
+import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
 import { InteractionEvent, ToolMode, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking';
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
@@ -33,29 +33,29 @@ export class HighlightTool extends BaseTool implements ITool {
 
     // 部位名称映射表：序列号 -> 中文名称
     private readonly PART_NAME_MAP: Record<number, string> = {
-        0: '左耳',
-        1: '右耳',
-        2: '左耳',
-        3: '右耳',
-        4: '头发',
-        5: '右胸',
-        6: '右肩',
-        7: '右臂',
-        8: '右前臂',
-        9: '左胸',
-        10: '左肩',
-        11: '左臂',
-        12: '左骨',
-        13: '左腿',
-        14: '右腿',
-        15: '右腿',
-        16: '右腿',
+        0: '右颞',
+        1: '左颞',
+        2: '左大臂',
+        3: '左小腿',
+        4: '头顶',
+        5: '右小腿',
+        6: '右小臂',
+        7: '左小臂',
+        8: '右大臂',
+        9: '左大腿',
+        10: '右大腿',
+        11: '右臀',
+        12: '左臀',
+        13: '下体',
+        14: '右脚',
+        15: '左脚',
+        16: '右手',
         17: '左手',
         18: '背',
-        19: '腰带',
+        19: '胸腹',
         20: '颈',
         21: '面',
-        22: '右脚',
+        22: '后脑',
         23: '左耳廓',
         24: '右耳廓'
     };
@@ -88,10 +88,16 @@ export class HighlightTool extends BaseTool implements ITool {
     activate(): void {
         super.activate();
         this.sceneController.orbitControls.enabled = true;
+
+        //预初始化所有模型的原始材料
+        this.preInitializeMaterials();
+
+
         // 监听UI指令，一次性为所有待定高亮创建标注
         this.cleanupCreateAnnotationListener = this.eventEmitter.on('createHighlightAnnotation', () => {
             this.createAnnotationsForAllPending();
         });
+        
     }
 
     deactivate(): void {
@@ -113,9 +119,13 @@ export class HighlightTool extends BaseTool implements ITool {
             if (this.hoveredMaterialInfo?.mesh !== mesh || this.hoveredMaterialInfo?.materialIndex !== materialIndex) {
                 this.clearHoverState();
                 this.setHoverState(mesh, materialIndex, key);
+                // 强制渲染以确保悬停高亮效果显示
+                this.sceneController.forceRender();
             }
         } else {
             this.clearHoverState();
+            // 强制渲染以确保悬停高亮清除生效
+            this.sceneController.forceRender();
         }
     }
 
@@ -123,28 +133,26 @@ export class HighlightTool extends BaseTool implements ITool {
      * 核心交互逻辑：整合了耳廓点选和普通部位多选两种模式
      */
     onPointerDown(event: InteractionEvent): void {
-        console.log('HighlightTool.onPointerDown 被调用')
         const intersection = this.getIntersection(event)
 
         if (intersection && typeof intersection.face?.materialIndex !== 'undefined') {
             const mesh = intersection.object as THREE.Mesh
             const materialIndex = intersection.face.materialIndex
             const key = `${mesh.uuid}-${materialIndex}`
-            
-            console.log(`点击了材质索引: ${materialIndex}, key: ${key}`)
+
+            //在处理高亮逻辑之前，立即识别部位并发送事件
+            const partName = this.getPartName(mesh, materialIndex);
+            this.eventEmitter.emit('partSelected',{partId:key,name:partName});
             
             const isEarClicked = this.EAR_MATERIAL_INDICES.includes(materialIndex)
-            console.log(`是否点击耳廓: ${isEarClicked}`)
 
             if (isEarClicked) {
                 // --- 工作流1: 点击了耳廓 ---
-                console.log('执行耳廓点击逻辑')
                 // 1. 清除所有非耳廓的高亮（包括待定和已标注的未点击添加按钮的）
                 this.deselectAllNonEarMaterials()
                 
                 // 2. 如果该耳廓已添加标签，则忽略操作
                 if (this.materialToAnnotationIdMap.has(key)) {
-                    console.log('该耳廓已添加标签，忽略操作')
                     return
                 }
                 
@@ -154,66 +162,47 @@ export class HighlightTool extends BaseTool implements ITool {
                 // 4. 切换当前耳廓的高亮状态
                 if (this.pendingEarHighlights.has(key)) {
                     // 如果已在待定列表，则从中移除并取消高亮
-                    console.log('耳廓已在待定列表，取消高亮')
                     this.pendingEarHighlights.delete(key)
                     this.deselectMaterial(key)
-                    // 如果移除后列表为空，通知UI禁用按钮
-                    if (this.pendingEarHighlights.size === 0) {
-                        console.log('发送 highlightPartDeselected 事件 (耳廓)')
-                        this.eventEmitter.emit('highlightPartDeselected', {})
-                    }
                 } else {
                     // 如果不在待定列表，则添加并高亮
-                    console.log('耳廓不在待定列表，添加高亮')
                     this.selectMaterial(mesh, materialIndex, key)
                     
                     // 获取部位名称
                     const partName = this.getPartName(mesh, materialIndex)
-                    console.log(`耳廓部位名称: ${partName}`)
                     
                     const position = intersection.point.clone()
                     this.pendingEarHighlights.set(key, { name: partName, position })
-                    // 通知UI启用按钮
-                    console.log('发送 highlightPartSelected 事件 (耳廓)')
-                    this.eventEmitter.emit('highlightPartSelected', {})
+                    
+                    // 强制渲染以确保选中高亮效果显示
+                    this.sceneController.forceRender()
                 }
             } else {
                 // --- 工作流2: 点击了普通部位 ---
-                console.log('执行普通部位点击逻辑')
                 // 1. 清除所有耳廓的高亮（指的是未点击添加按钮没有标注的高亮部位）
                 this.deselectAllEarMaterials()
 
                 // 2. 如果该部位已添加标签，则忽略操作
                 if (this.materialToAnnotationIdMap.has(key)) {
-                    console.log('该部位已添加标签，忽略操作')
                     return
                 }
 
                 // 3. 切换该部位在"待定高亮"列表中的状态
                 if (this.pendingHighlights.has(key)) {
                     // 如果已在待定列表，则从中移除并取消高亮
-                    console.log('普通部位已在待定列表，取消高亮')
                     this.pendingHighlights.delete(key)
                     this.deselectMaterial(key)
-                    // 如果移除后列表为空，通知UI禁用按钮
-                    if (this.pendingHighlights.size === 0) {
-                        console.log('发送 highlightPartDeselected 事件 (普通部位)')
-                        this.eventEmitter.emit('highlightPartDeselected', {})
-                    }
+
                 } else {
                     // 如果不在待定列表，则添加并高亮
-                    console.log('普通部位不在待定列表，添加高亮')
                     this.selectMaterial(mesh, materialIndex, key)
                     
                     // 获取部位名称
                     const partName = this.getPartName(mesh, materialIndex)
-                    console.log(`普通部位名称: ${partName}`)
                     
                     const position = intersection.point.clone()
                     this.pendingHighlights.set(key, { name: partName, position })
-                    // 通知UI启用按钮
-                    console.log('发送 highlightPartSelected 事件 (普通部位)')
-                    this.eventEmitter.emit('highlightPartSelected', {})
+
                 }
             }
         } else {
@@ -241,27 +230,29 @@ export class HighlightTool extends BaseTool implements ITool {
         this.pendingHighlights.clear();
         this.pendingEarHighlights.clear();
         
-        // 通知UI禁用按钮
-        this.eventEmitter.emit('highlightPartDeselected', {});
     }
 
     /**
      * 创建单个标注
      */
     private createSingleAnnotation(key: string, name: string, position: THREE.Vector3): void {
+        //创建DOM元素
         const labelDiv = document.createElement('div');
         labelDiv.className = 'measurement-label highlight-label';
         labelDiv.textContent = name;
         const labelObject = new CSS2DObject(labelDiv);
         
+        //设置标签位置
         const labelPosition = position.clone().add(new THREE.Vector3(0, 0.1, 0));
         labelObject.position.copy(labelPosition);
         
+        //创建指引线
         const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false });
         const lineGeometry = new THREE.BufferGeometry().setFromPoints([labelPosition, position]);
         const leaderLine = new THREE.Line(lineGeometry, lineMaterial);
         leaderLine.renderOrder = 997;
 
+        //添加到标注管理器
         const annotation = this.annotationManager.addHighlightAnnotation({
             name,
             labelObject,
@@ -269,6 +260,7 @@ export class HighlightTool extends BaseTool implements ITool {
             materialKey: key,
         });
 
+        //记录映射关系
         this.materialToAnnotationIdMap.set(key, annotation.id);
     }
 
@@ -301,10 +293,25 @@ export class HighlightTool extends BaseTool implements ITool {
         }
     }
 
+    /**
+     * 预初始化所有模型的原始材料，避免首次点击时的延迟
+     **/
+    private preInitializeMaterials(): void {
+        if(!this.sceneController.targetModel) return;
+
+        this.sceneController.targetModel.traverse((child:THREE.Object3D) => {
+            if((child as THREE.Mesh).isMesh){
+                const mesh = child as THREE.Mesh;
+                this.ensureOriginalMaterialsStored(mesh);
+            }
+        })
+    }
+
+
     private updateMaterialDisplay(mesh: THREE.Mesh, materialIndex: number, key: string): void {
         if (!Array.isArray(mesh.material)) return;
         
-        this.ensureOriginalMaterialsStored(mesh);
+        this.ensureOriginalMaterialsStored(mesh);// 确保原始材质已存储
         
         const isSelected = this.selectedMaterials.has(key);
         const isHovered = this.hoveredMaterialInfo?.mesh === mesh && 
@@ -312,6 +319,7 @@ export class HighlightTool extends BaseTool implements ITool {
         
         let targetMaterial: THREE.Material;
         
+        //优先级：选中》悬停》原始
         if (isSelected) {
             targetMaterial = this.selectHighlightMaterial;
         } else if (isHovered) {
@@ -322,6 +330,10 @@ export class HighlightTool extends BaseTool implements ITool {
         
         (mesh.material as THREE.Material[])[materialIndex] = targetMaterial;
         this.forceUpdate(mesh);
+
+        requestAnimationFrame(()=>{
+            //空操作，仅确保渲染循环执行
+        })
     }
     
     private forceUpdate(mesh: THREE.Mesh): void {
@@ -343,10 +355,12 @@ export class HighlightTool extends BaseTool implements ITool {
         return intersects.length > 0 ? intersects[0] : null;
     }
     
+    //原始材质保存机制
     private ensureOriginalMaterialsStored(mesh: THREE.Mesh): void {
         if (!mesh.userData.originalMaterials) {
             const materials = mesh.material;
             if (Array.isArray(materials)) {
+                //首次点击时，需要对所有材质进行克隆
                 mesh.userData.originalMaterials = materials.map((material:THREE.Material) => material.clone());
             } else {
                 mesh.userData.originalMaterials = [materials.clone()];
@@ -368,23 +382,21 @@ export class HighlightTool extends BaseTool implements ITool {
         if (Array.isArray(mesh.material)) {
             const material = mesh.material[materialIndex]
             materialName = material.name || ''
+            
         }
         
         // 如果材质有名称且不为空，使用材质名称
         if (materialName && materialName.trim()) {
-            console.log(`使用材质名称: ${materialName}`)
             return materialName.trim()
         }
         
         // 否则使用映射表
         if (this.PART_NAME_MAP[materialIndex]) {
-            console.log(`使用映射表名称: ${this.PART_NAME_MAP[materialIndex]}`)
             return this.PART_NAME_MAP[materialIndex]
         }
         
         // 最后使用默认名称
         const defaultName = `部位${materialIndex}`
-        console.log(`使用默认名称: ${defaultName}`)
         return defaultName
     }
     
@@ -403,10 +415,6 @@ export class HighlightTool extends BaseTool implements ITool {
         // 注意：不清除已标注的普通部位，只清除未标注的
         // 已标注的部位在 materialToAnnotationIdMap 中，但不需要在这里清除
 
-        // 如果没有任何待定高亮了，通知UI禁用按钮
-        if (this.pendingEarHighlights.size === 0) {
-            this.eventEmitter.emit('highlightPartDeselected', {});
-        }
     }
 
     /**
@@ -422,10 +430,6 @@ export class HighlightTool extends BaseTool implements ITool {
         // 注意：不清除已标注的耳廓，只清除未标注的
         // 已标注的耳廓在 materialToAnnotationIdMap 中，但不需要在这里清除
 
-        // 如果没有任何待定高亮了，通知UI禁用按钮
-        if (this.pendingHighlights.size === 0) {
-            this.eventEmitter.emit('highlightPartDeselected', {});
-        }
     }
     
     /**
@@ -450,7 +454,6 @@ export class HighlightTool extends BaseTool implements ITool {
         });
         this.materialToAnnotationIdMap.clear();
 
-        this.eventEmitter.emit('highlightPartDeselected', {});
     }
     
     dispose(): void {
@@ -462,11 +465,9 @@ export class HighlightTool extends BaseTool implements ITool {
      * 清除另一个耳廓的高亮（左右耳廓互斥）
      */
     private clearOtherEarHighlight(currentMaterialIndex: number): void {
-        console.log(`清除其他耳廓高亮，当前点击的是材质索引: ${currentMaterialIndex}`)
         
         // 确定另一个耳廓的材质索引
         const otherEarIndex = currentMaterialIndex === 23 ? 24 : 23
-        console.log(`需要清除的耳廓材质索引: ${otherEarIndex}`)
         
         // 遍历待定的耳廓高亮，找到另一个耳廓并清除
         const keysToRemove: string[] = []
@@ -475,7 +476,6 @@ export class HighlightTool extends BaseTool implements ITool {
             const materialInfo = this.selectedMaterials.get(key)
             if (materialInfo && materialInfo.materialIndex === otherEarIndex) {
                 keysToRemove.push(key)
-                console.log(`找到需要清除的耳廓: key=${key}, materialIndex=${otherEarIndex}`)
             }
         })
         
@@ -483,7 +483,7 @@ export class HighlightTool extends BaseTool implements ITool {
         keysToRemove.forEach(key => {
             this.pendingEarHighlights.delete(key)
             this.deselectMaterial(key)
-            console.log(`已清除耳廓高亮: ${key}`)
         })
     }
+
 }

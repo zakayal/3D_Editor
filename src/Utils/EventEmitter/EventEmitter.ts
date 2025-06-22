@@ -1,3 +1,11 @@
+/*
+ * @Author: Kaze 3243442830@qq.com
+ * @Date: 2025-06-17 20:54:18
+ * @LastEditors: Kaze 3243442830@qq.com
+ * @LastEditTime: 2025-06-22 21:30:29
+ * @FilePath: \marking\src\Utils\EventEmitter\EventEmitter.ts
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 import { ApiListeners, EventCallback, IEventEmitter } from '../../types/webgl-marking'; 
 
 // 定义内部监听器结构以匹配新的 ApiListeners 接口
@@ -17,20 +25,23 @@ export class EventEmitter implements IEventEmitter {
         annotationDeselected: [], 
         modeChanged: [], 
         measurementCompleted: [], 
-        measurementCancelled: [], // 新增：测量取消事件
-        measurementSaved: [], // 新增：测量保存事件
-        measurementsRestored: [], // 新增：测量恢复事件
+        measurementCancelled: [], // 测量取消事件
+        measurementSaved: [], // 测量保存事件
+        measurementsRestored: [], // 测量恢复事件
         error: [], 
         notification: [], 
         ready: [], 
         measurementUpdated: [], 
-        toolModeChangeRequested: [], // New event
+        toolModeChangeRequested: [], 
         dijkstraReady:[],
-        areaCalculationStarted: [], // 新增：面积计算开始事件
-        areaCalculationCompleted: [], // 新增：面积计算完成事件
-        highlightPartSelected: [], // 新增：高亮部位选中事件
-        highlightPartDeselected: [], // 新增：高亮部位取消选中事件
-        createHighlightAnnotation: [], // 新增：创建高亮标注指令事件
+        areaCalculationStarted: [], // 面积计算开始事件
+        areaCalculationCompleted: [], // 面积计算完成事件
+
+        //新增
+        partSelected:[],
+        injuryContextAdded:[],
+
+        createHighlightAnnotation: [], // 创建高亮标注指令事件
     };
 
     /**

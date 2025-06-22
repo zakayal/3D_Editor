@@ -101,6 +101,19 @@ export interface MeshGraphData {
 /** 事件回调函数类型 */
 export type EventCallback<T = any> = (data: T) => void;
 
+export interface InjuryContext{
+    id:string; //部位的唯一id，即partId
+    name:string;
+    creationTime:Date;//创建时间
+    measurements:{
+        //用于未来存储的累计测量数据
+        cumulativeArea: number;
+        cumulativeCurveLength: number;
+        cumulativeStraightLength: number;
+        bsaPercentage: number;
+    }
+}
+
 /** API 事件监听器映射类型 */
 export interface ApiListeners {
     annotationAdded: Annotation;
@@ -108,7 +121,7 @@ export interface ApiListeners {
     annotationSelected: { id: string; type: ToolMode; position: THREE.Vector3 };
     annotationDeselected: { id: string };
     modeChanged: { mode: ToolMode; enabled: boolean };
-    measurementCompleted: Annotation | { area: number; triangles: number[]; isTempMeasurement?: boolean };
+    measurementCompleted: Annotation | { area: number; triangles: number[]; lassoPath?: number[]; isTempMeasurement?: boolean };
     measurementCancelled: { cancelledArea: number; remainingArea: number; savedCount: number };
     measurementSaved: Annotation & { area: number; triangles: number[]; totalArea: number; savedCount: number };
     measurementsRestored: { count: number; totalArea: number; measurements: Array<{ triangles: number[]; area: number }> };
@@ -120,9 +133,11 @@ export interface ApiListeners {
     dijkstraReady: boolean;
     areaCalculationStarted: { triangleCount: number };
     areaCalculationCompleted: { area: number; triangleCount: number };
+    
+    //新增：当用户在主模型上选择一个有效的身体部位时触发
+    partSelected: {partId: string; name: string};
+    injuryContextAdded:{context:InjuryContext},
 
-    highlightPartSelected: {}; // 载荷为空，仅用于通知UI按钮应变为“可用”
-    highlightPartDeselected: {}; // 载荷为空，仅用于通知UI按钮应变为“禁用”
     createHighlightAnnotation: {}; // 载荷为空，仅作为一个指令
 }
 
@@ -197,6 +212,24 @@ export interface ISceneController {
     updateRenderSize(width: number, height: number): void;
     getTargetMeshGeometry(): THREE.BufferGeometry | null; // 新增：获取主模型几何体
     getTargetMeshWorldMatrix(): THREE.Matrix4 | null; // 新增：获取主模型世界矩阵
+    forceRender(): void; // 新增：强制渲染方法，供工具调用
+    
+    // 性能优化相关方法
+    setPerformanceMode(mode: 'high' | 'medium' | 'low'): void; // 手动设置性能模式
+    getPerformanceStats(): { // 获取性能统计信息
+        mode: string;
+        avgFPS: number;
+        triangles: number;
+        pixelRatio: number;
+        lodEnabled: boolean;
+        bvhEnabled: boolean;
+        activeBVHCount: number;
+    };
+    
+    // BVH和LOD控制方法
+    setBVHEnabled(enabled: boolean): void; // 启用/禁用BVH加速
+    setLODEnabled(enabled: boolean): void; // 启用/禁用LOD系统
+    setLODDistanceThreshold(distance: number): void; // 设置LOD距离阈值
 }
 
 export interface IAnnotationManager {

@@ -23,7 +23,8 @@ import {
     IInteractionManager,
     IEventEmitter,
     ApiListeners,
-    EventCallback
+    EventCallback,
+    InjuryContext,
 } from '../types/webgl-marking';
 
 
@@ -42,6 +43,7 @@ export class WebGLMarkingAPI implements IEventEmitter {
     private container!: HTMLElement;
     private canvasConfig: CanvasConfig;
     private eventEmitter: IEventEmitter;
+    private injuryContexts:Map<string, InjuryContext> = new Map();
 
     private apiReadyStatus: { core: boolean, dijkstra: boolean } = { core: false, dijkstra: false };
 
@@ -384,7 +386,47 @@ export class WebGLMarkingAPI implements IEventEmitter {
         }
     }
 
+    /**
+     * 为指定部位创建一个新的鉴伤上下文（模拟“添加”按钮功能）
+     * @param partData - 从 partSelected 事件获取的部位信息
+     */
+    public addInjuryContext(partData: {partId:string, name: string}):InjuryContext | null {
+        //检查是否已经存在，放置重复创建
+        if(this.injuryContexts.has(partData.partId))
+        {
+            console.warn(`WebGLMarkingAPI 部位 "${partData.name}" 的鉴伤上下文已经存在`);
+            return this.injuryContexts.get(partData.partId) || null;
+        }
+        //创建新的上下文对象
+        const newContext:InjuryContext = {
+            id: partData.partId,
+            name:partData.name,
+            creationTime:new Date(),
+            measurements:{
+                cumulativeArea:0,
+                cumulativeCurveLength:0,
+                cumulativeStraightLength:0,
+                bsaPercentage:0,
+            }
+        }
 
+        //存入map中进行管理
+        this.injuryContexts.set(newContext.id,newContext);
+
+        console.log(`WebGLMarkingAPI 新的鉴伤上下文已创建`, newContext);
+
+        //发出事件，通知外部上下文已创建
+        this.eventEmitter.emit('injuryContextAdded',{context:newContext});
+
+        return newContext;
+        
+    }
+
+    /* 提供一个获取所有上下文的方法，便于调试 */
+    public getAllInjuryContexts():Map<string,InjuryContext>
+    {
+        return this.injuryContexts;
+    }
     // --- 事件系统 ---
     // 直接委托给 EventEmitter 实例
 

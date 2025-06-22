@@ -1,6 +1,6 @@
 //@ts-ignore
 import * as THREE from 'three';
-import { BaseTool, ITool } from '../../Components/Base-tools/BaseTool';
+import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
 import { InteractionEvent, ToolMode, StraightMeasurementAnnotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
@@ -87,6 +87,8 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
     onPointerMove(event: InteractionEvent): void {
         if (this.currentPoints.length !== 1 || !event.intersection) {
             this._clearPreviewLine();
+            // 强制渲染以确保预览线的清除生效
+            this.sceneController.forceRender();
             return;
         }
 
@@ -110,6 +112,9 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
         this.previewLine.renderOrder = 998;
         this.previewLine.computeLineDistances();
         this.sceneController.scene.add(this.previewLine);
+        
+        // 强制渲染以确保预览线显示
+        this.sceneController.forceRender();
     }
 
     onKeyDown(event: InteractionEvent): void {

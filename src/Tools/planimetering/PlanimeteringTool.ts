@@ -6,6 +6,8 @@ import * as THREE from 'three';
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
+import { EnhancedIntelligentHighlightSystem } from '../../Utils/BasedHighlight/integrated_highlight_system'
+
 /**
  * Planimetering 工具 - 用于测量选定区域的面积
  * 这是一个适配器类，将 Planimetering 函数式工具适配为符合 ITool 接口的类
@@ -21,16 +23,28 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     private shouldExitOnNextEsc: boolean = false;
     // 新增：跟踪第一次点击位置
     private firstClickPosition: THREE.Vector3 | null = null;
+    //新增：跟踪延迟重启调用的id
+    private restartTimeoutId: number | null = null;
+
+    //添加几何体缓存
+    private geometryCache: {
+        originalGeometry?: THREE.BufferGeometry;
+        indexedGeometry?: THREE.BufferGeometry;
+        isProcessed?: boolean;
+    } = {};
+
+    // private textureHighlight: TextureBasedHighlightSystem | null = null;
+    // private shaderHighlight: ShaderBasedHighlightSystem | null = null;
+
+    private highlightSystem: EnhancedIntelligentHighlightSystem | null = null;
 
     constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) {
         super(sceneController, annotationManager, eventEmitter);
-        console.log("PlanimeteringTool: Constructed.");
     }
 
     // 监听标注被删除的事件，以维护内部状态的一致性
     private handleAnnotationRemoved = (data: { id: string }) => {
         console.log("PlanimeteringTool: Received annotation removal notification for:", data.id);
-        // 简化：不需要维护内部列表，删除逻辑由AnnotationManager处理
     };
 
     getMode(): ToolMode {
@@ -38,7 +52,14 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     }
 
     activate(): void {
-        console.log("PlanimeteringTool: Activating...");
+        console.log("PlanimeteringTool: activate() 被调用");
+        console.log("PlanimeteringTool: 当前状态 - isActive:", this.isActive, "isInitialized:", this.isInitialized);
+
+        if (this.isActive) {
+            console.log("PlanimeteringTool: 工具已经激活，跳过重复激活");
+            return;
+        }
+
         this.isActive = true;
 
         // 监听标注删除事件
@@ -48,50 +69,110 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             this.initializePlanimetering();
         }
 
-        // 启动Planimetering工具的测量功能
+        //预处理几何体和预创建高亮网格池
+        this.preProcessGeometry();
+
+        //初始化高亮优化器
+        this.initializeHighlightOptimizer();
+
+        // 启用实时高亮反馈
         if (this.planimetering) {
-            console.log("PlanimeteringTool: Starting measurement...");
-            this.planimetering.startMeasurement();
+            this.enableOptimizedRealTimeHighlight();
         }
 
         // 暂停相机控制以避免冲突
         this.sceneController.orbitControls.mouseButtons.RIGHT = null;
 
         // 启动渲染循环
-        this.startRenderLoop();
+        this.startOptimizedRenderLoop();//使用优化后的渲染循环
+        
+        // 强制进行一次渲染以确保模型可见
+        this.sceneController.forceRender();
 
         console.log("PlanimeteringTool: Activated successfully.");
         this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: true });
+
     }
 
     deactivate(): void {
         console.log("PlanimeteringTool deactivated.");
         this.isActive = false;
-        
-        // 恢复相机控制
-        this.sceneController.orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
 
-        this.sceneController.orbitControls.enabled = true;
-        
+        // 清除任何待执行的重启调用
+        if (this.restartTimeoutId !== null) {
+            clearTimeout(this.restartTimeoutId);
+            this.restartTimeoutId = null;
+            console.log("PlanimeteringTool: 已清除待执行的重启调用");
+        }
+
         // 停止渲染循环
         this.stopRenderLoop();
-        
+        console.log("PlanimeteringTool: 渲染循环已停止");
+
+        // 完全停用套索工具
         if (this.planimetering) {
-            // 只取消当前的临时测量，不影响已保存的测量
-            this.planimetering.cancelMeasurement();
+            console.log("PlanimeteringTool: 开始停用套索工具...");
+            // 使用 exitMeasurement 来完全停用套索工具的事件监听
+            if (typeof this.planimetering.exitMeasurement === 'function') {
+                console.log("PlanimeteringTool: 调用 exitMeasurement...");
+                this.planimetering.exitMeasurement();
+                console.log("PlanimeteringTool: 套索工具事件监听已完全移除");
+            } else {
+                console.log("PlanimeteringTool: exitMeasurement 不可用，使用 cancelMeasurement...");
+                this.planimetering.cancelMeasurement();
+                console.log("PlanimeteringTool: 使用备用方案取消测量");
+            }
+            if (typeof this.planimetering.dispose === 'function') {
+                this.planimetering.dispose();
+            }
+
+            this.planimetering = null;
+
+        } else {
+            console.log("PlanimeteringTool: planimetering 对象不存在");
         }
-        
+
+        //清理workGroup
+        if (this.workGroup && this.workGroup.parent) {
+            this.workGroup.parent.remove(this.workGroup);
+            this.workGroup = null;
+            console.log("PlanimeteringTool: Work group removed from scene");
+        }
+
+        // 恢复相机控制
+        this.sceneController.orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+        this.sceneController.orbitControls.enabled = true;
+        console.log("PlanimeteringTool: 相机控制已恢复");
+
         // 清除临时测量数据
         this.currentMeasurement = null;
         this.shouldExitOnNextEsc = false;
-        
+
+        //初始化重置状态，强制下次激活时重新初始化
+        this.isInitialized = false;
+
+        // 确保原始模型可见性得到恢复
+        if (this.sceneController.targetModel) {
+            this.sceneController.targetModel.visible = true;
+            this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+                if ((child as THREE.Mesh).isMesh) {
+                    child.visible = true;
+                }
+            });
+            console.log("PlanimeteringTool: Restored original model visibility on deactivate");
+        }
+
         console.log("PlanimeteringTool: Deactivated. Saved measurements remain visible.");
-        
+
         // 通知 UI 工具模式已停用
         this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: false });
     }
 
     private initializePlanimetering(): void {
+        console.log("PlanimeteringTool: initializePlanimetering() 被调用");
+        console.log("PlanimeteringTool: 当前 planimetering 实例:", !!this.planimetering);
+
+
         try {
             // 检查是否有有效的目标模型
             if (!this.sceneController.targetModel) {
@@ -116,19 +197,19 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
             // 创建一个专门的工作组，确保网格在正确的位置
             this.workGroup = new THREE.Group();
-            
+
             // 创建新的网格对象，避免克隆时的循环引用问题
             const meshClone = new THREE.Mesh();
             meshClone.geometry = (targetMesh as THREE.Mesh).geometry; // 共享几何体，避免重复数据
             meshClone.material = (targetMesh as THREE.Mesh).material; // 共享材质
-            
+
             // 拷贝变换信息
             meshClone.position.copy((targetMesh as THREE.Mesh).position);
             meshClone.rotation.copy((targetMesh as THREE.Mesh).rotation);
             meshClone.scale.copy((targetMesh as THREE.Mesh).scale);
-            
+
             // 不拷贝 userData，避免循环引用
-            
+
             // 确保工作组有5个子对象，第4个是我们的网格
             for (let i = 0; i < 4; i++) {
                 this.workGroup.add(new THREE.Group());
@@ -139,23 +220,23 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             this.workGroup.position.copy(this.sceneController.targetModel.position);
             this.workGroup.rotation.copy(this.sceneController.targetModel.rotation);
             this.workGroup.scale.copy(this.sceneController.targetModel.scale);
-            
+
             // 将工作组添加到场景中
             this.sceneController.scene.add(this.workGroup);
-            
+
             // 更新矩阵
             this.workGroup.updateMatrixWorld(true);
 
             console.log("PlanimeteringTool: Work group created with", this.workGroup.children.length, "children");
             console.log("PlanimeteringTool: Mesh clone at index 4:", this.workGroup.children[4]);
-            
+
             // 检查网格的几何体信息
             const meshAt4 = this.workGroup.children[4] as THREE.Mesh;
             console.log("PlanimeteringTool: Mesh geometry:", meshAt4.geometry);
             console.log("PlanimeteringTool: Geometry has index:", !!meshAt4.geometry.index);
             console.log("PlanimeteringTool: Geometry vertex count:", meshAt4.geometry.attributes.position?.count);
             console.log("PlanimeteringTool: Geometry is indexed:", meshAt4.geometry.index ? "Yes" : "No");
-            
+
             // Planimetering需要索引几何体来进行高亮显示
             // 如果几何体没有索引，需要创建索引
             if (!meshAt4.geometry.index) {
@@ -171,7 +252,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             } else {
                 console.log("PlanimeteringTool: Geometry already has index with", meshAt4.geometry.index.count, "indices");
             }
-            
+
             // 确保几何体有颜色属性（Planimetering需要）
             if (!meshAt4.geometry.attributes.color) {
                 console.log("PlanimeteringTool: Adding color attribute to geometry...");
@@ -179,12 +260,12 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 const colors = new Array(vertexCount * 3).fill(255);
                 meshAt4.geometry.setAttribute('color', new THREE.BufferAttribute(new Uint8Array(colors), 3, true));
             }
-            
+
             // 确保几何体计算了边界盒
             if (!meshAt4.geometry.boundingBox) {
                 meshAt4.geometry.computeBoundingBox();
             }
-            
+
             // 确保几何体计算了边界球
             if (!meshAt4.geometry.boundingSphere) {
                 meshAt4.geometry.computeBoundingSphere();
@@ -198,6 +279,17 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 this.workGroup
             );
 
+            // 确保原始模型仍然可见，防止被第三方库意外隐藏
+            if (this.sceneController.targetModel) {
+                this.sceneController.targetModel.visible = true;
+                this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+                    if ((child as THREE.Mesh).isMesh) {
+                        child.visible = true;
+                    }
+                });
+                console.log("PlanimeteringTool: Ensured original model visibility");
+            }
+
             // 注册事件发射器
             this.planimetering.registerEventEmitter(this.eventEmitter);
 
@@ -209,38 +301,70 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             });
 
             // 注册回调函数，处理测量完成事件
-            this.planimetering.registerLassoFinishedCall((data: { triangles: number[]; area: number }) => {
-                console.log("Planimetering measurement completed:", data);
-                
-                // 存储当前测量数据，但不立即保存
-                this.currentMeasurement = { triangles: data.triangles, area: data.area };
-                
-                // 检查高亮网格状态
-                this.debugHighlightMesh();
-                
-                // 通知系统测量完成，但不创建annotation（等待用户保存）
-                this.eventEmitter.emit('measurementCompleted', {
-                    area: data.area,
-                    triangles: data.triangles,
-                    isTempMeasurement: true // 标记为临时测量
-                });
-                
-                // 不自动调用saveMeasurement，等待用户主动按Enter键保存
-                console.log("PlanimeteringTool: Measurement completed. Press Enter to save or ESC to cancel.");
-                console.log("PlanimeteringTool: Current measurement - Area:", data.area, "Triangles:", data.triangles.length);
+            this.planimetering.registerLassoFinishedCall((data: { triangles: number[]; area: number | null; lassoPath?: number[]; isCalculating?: boolean }) => {
+                console.log("Planimetering measurement callback:", data);
+
+                // 如果是第一次回调（高亮显示）
+                if (data.isCalculating) {
+                    console.log("PlanimeteringTool: 高亮显示已就绪，面积计算中...");
+                    
+                    // 立即更新高亮显示
+                    if (this.highlightSystem) {
+                        if (data.lassoPath && data.lassoPath.length > 6) {
+                            // 使用性能最高的路径
+                            this.highlightSystem.updateHighlightWithLassoPath(data.lassoPath);
+                        } else {
+                            this.highlightSystem.updateHighlight(data.triangles);
+                        }
+                    }
+                    
+                    // 检查高亮网格状态
+                    this.debugHighlightMesh();
+                    
+                    // 通知系统高亮显示已完成，但面积计算正在进行
+                    this.eventEmitter.emit('notification', {
+                        message: '高亮显示已完成，正在计算面积...',
+                        type: 'info'
+                    });
+                    
+                    return; // 第一次回调结束，等待第二次回调
+                }
+
+                // 第二次回调（计算结果）
+                if (data.area !== null) {
+                    console.log("PlanimeteringTool: 面积计算完成:", data.area);
+                    
+                    // 存储当前测量数据
+                    this.currentMeasurement = { triangles: data.triangles, area: data.area };
+
+                    // 通知系统测量完成，但不创建annotation（等待用户保存）
+                    this.eventEmitter.emit('measurementCompleted', {
+                        area: data.area,
+                        triangles: data.triangles,
+                        lassoPath: data.lassoPath,
+                        isTempMeasurement: true // 标记为临时测量
+                    });
+
+                    // 不自动调用saveMeasurement，等待用户主动按Enter键保存
+                    console.log("PlanimeteringTool: Measurement completed. Press Enter to save or ESC to cancel.");
+                    console.log("PlanimeteringTool: Current measurement - Area:", data.area, "Triangles:", data.triangles.length);
+                    if (data.lassoPath) {
+                        console.log("PlanimeteringTool: Lasso path points:", Math.floor(data.lassoPath.length / 3));
+                    }
+                }
             });
 
             this.isInitialized = true;
             console.log("Planimetering tool initialized successfully.");
-            
+
             // 初始化完成后立即启动测量
             console.log("PlanimeteringTool: Starting initial measurement...");
             this.planimetering.startMeasurement();
         } catch (error) {
             console.error("Failed to initialize Planimetering tool:", error);
-            this.eventEmitter.emit('error', { 
-                message: "Failed to initialize Planimetering tool", 
-                details: error 
+            this.eventEmitter.emit('error', {
+                message: "Failed to initialize Planimetering tool",
+                details: error
             });
         }
     }
@@ -272,7 +396,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         if (!this.isActive) return;
 
         const keyEvent = event.originalEvent as KeyboardEvent;
-        
+
         // ESC 键取消当前测量或退出工具
         if (keyEvent.key === 'Escape') {
             // 如果标记了应该退出，则切换到空闲模式
@@ -295,29 +419,29 @@ export class PlanimeteringTool extends BaseTool implements ITool {
      */
     public cancelCurrentMeasurement(): void {
         console.log("PlanimeteringTool: Cancelling current measurement.");
-        
+
         const hadCurrentMeasurement = this.currentMeasurement !== null;
         const previousArea = this.currentMeasurement?.area || 0;
-        
+
         if (this.planimetering) {
             // 调用原始的cancelMeasurement会清除所有数据
             this.planimetering.cancelMeasurement();
         }
-        
+
         // 清除当前临时测量
         this.currentMeasurement = null;
-        
+
         // 如果之前有临时测量，发送专门的取消事件
         if (hadCurrentMeasurement) {
             console.log("PlanimeteringTool: Cancelled temporary measurement with area:", previousArea);
-            
+
             // 发送测量取消事件，UI可以据此更新显示
             this.eventEmitter.emit('measurementCancelled', {
                 cancelledArea: previousArea,
                 remainingArea: 0,
                 savedCount: 0
             });
-            
+
             // 额外发送通知
             this.eventEmitter.emit('notification', {
                 message: `已取消临时测量（面积: ${previousArea.toFixed(2)}）`,
@@ -329,22 +453,27 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 message: "当前没有测量数据。再次按ESC退出测量工具",
                 type: 'info'
             });
-            
+
             // 标记下次ESC应该退出
             this.shouldExitOnNextEsc = true;
-            
+
             setTimeout(() => {
                 this.shouldExitOnNextEsc = false;
             }, 3000); // 3秒内有效
         }
 
+        if (this.restartTimeoutId !== null) {
+            clearTimeout(this.restartTimeoutId);
+            this.restartTimeoutId = null;
+        }
+
         //重新启动下一次测量
-        setTimeout(()=>{
-            if(this.isActive && this.planimetering)
-            {
-                this.planimetering.startMeasurement();
-            }
-        },100)
+        // this.restartTimeoutId = window.setTimeout(() => {
+        //     if (this.isActive && this.planimetering) {
+        //         this.planimetering.startMeasurement();
+        //     }
+        //     this.restartTimeoutId = null;
+        // }, 100)
     }
 
     /**
@@ -352,15 +481,15 @@ export class PlanimeteringTool extends BaseTool implements ITool {
      */
     public confirmCurrentMeasurement(): void {
         console.log("PlanimeteringTool: Confirming current measurement.");
-        
+
         if (!this.currentMeasurement) {
             console.warn("PlanimeteringTool: No current measurement to save.");
             return;
         }
-        
+
         // 创建持久化的高亮网格（独立于工具生命周期）
         const persistentHighlightMesh = this.createPersistentHighlightMesh(this.currentMeasurement.triangles);
-        
+
         // 计算当前高亮图形的中心位置作为标签位置
         const highlightCenter = new THREE.Vector3();
         if (this.firstClickPosition) {
@@ -369,11 +498,11 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             // 如果无法计算边界盒，使用默认位置
             highlightCenter.set(0, 0, 0);
         }
-        
+
         // 为当前测量创建面积标签
         const areaLabel = this._createAreaLabel(this.currentMeasurement.area, highlightCenter);
         console.log("PlanimeteringTool: Area label created for measurement:", this.currentMeasurement.area);
-        
+
         // 创建标注对象
         const annotationData: Omit<PlanimeteringAnnotation, 'id' | 'type'> = {
             area: this.currentMeasurement.area,
@@ -385,11 +514,11 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         };
 
         const annotation = this.annotationManager.addPlanimetering(annotationData);
-        
+
         console.log("PlanimeteringTool: Measurement saved successfully.");
         console.log("PlanimeteringTool: Area:", this.currentMeasurement.area);
         console.log("PlanimeteringTool: Persistent highlight mesh created and added to scene.");
-        
+
         // 通知系统测量已保存
         this.eventEmitter.emit('measurementSaved', {
             ...annotation,
@@ -399,40 +528,55 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             savedCount: 1
         });
         this.eventEmitter.emit('annotationAdded', annotation);
-        
+
         // 调用第三方工具的保存方法
         if (this.planimetering) {
             this.planimetering.saveMeasurement();
         }
-        
+
         // 清除当前测量引用
         this.currentMeasurement = null;
-        
+
         // 通知用户测量已完成
         this.eventEmitter.emit('notification', {
             message: `面积测量已完成：${annotation.area.toFixed(2)} m²`,
             type: 'info'
         });
-        
+
+        if (this.restartTimeoutId !== null) {
+            clearTimeout(this.restartTimeoutId);
+            this.restartTimeoutId = null;
+        }
+
         // 重新开始测量状态以支持下一次操作
-        setTimeout(() => {
+        this.restartTimeoutId = window.setTimeout(() => {
             if (this.isActive && this.planimetering) {
                 console.log("PlanimeteringTool: Restarting measurement for next selection...");
                 this.planimetering.startMeasurement();
             }
+            this.restartTimeoutId = null;
         }, 100);
     }
-    
+
     /**
-     * 创建持久化的高亮网格，独立于工具生命周期
-     * @param triangleIndices 三角形索引数组
-     * @returns 持久化的高亮网格
+     * 创建持久化高亮网格（使用高级管理器或基础方法）
      */
     private createPersistentHighlightMesh(triangleIndices: number[]): THREE.Mesh {
-        if (!this.sceneController.targetModel) {
-            throw new Error("No target model available for creating persistent highlight mesh");
+        console.log("PlanimeteringTool: 创建持久高亮网格，三角形数量:", triangleIndices.length);
+
+        // 直接使用基础方法创建持久化网格（简化逻辑）
+        console.log("PlanimeteringTool: 使用基础方法创建持久高亮网格");
+        return this.createFallbackPersistentMesh(triangleIndices);
+    }
+
+    /**
+ * 降级方法：传统的持久化网格创建
+ */
+    private createFallbackPersistentMesh(triangleIndices: number[]): THREE.Mesh {
+        if (!this.sceneController.targetModel || !this.geometryCache.indexedGeometry) {
+            throw new Error("无法创建持久化高亮网格：缺少必要的几何体数据");
         }
-        
+
         // 查找目标网格
         let targetMesh: THREE.Mesh | null = null;
         this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
@@ -440,31 +584,25 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 targetMesh = child as THREE.Mesh;
             }
         });
-        
+
         if (!targetMesh) {
-            throw new Error("No valid mesh found for creating persistent highlight mesh");
+            throw new Error("未找到有效的目标网格");
         }
-        
-        console.log("PlanimeteringTool: Creating persistent highlight mesh for", triangleIndices.length, "triangles");
-        
-        // 创建新的几何体用于高亮显示
-        const highlightGeometry = (targetMesh as THREE.Mesh).geometry.clone();
-        
-        // 创建新的索引缓冲区，只包含选中的三角形
-        const originalIndex = (targetMesh as THREE.Mesh).geometry.index;
-        if (!originalIndex) {
-            throw new Error("Target mesh must have indexed geometry for highlight creation");
-        }
-        
+
+        // 创建传统的高亮网格
+        const highlightGeometry = this.geometryCache.indexedGeometry.clone();
+        const originalIndex = this.geometryCache.indexedGeometry.index!;
+
         const newIndexArray = new Uint32Array(triangleIndices.length);
+        const originalArray = originalIndex.array as Uint32Array;
+
         for (let i = 0; i < triangleIndices.length; i++) {
-            newIndexArray[i] = originalIndex.getX(triangleIndices[i]);
+            newIndexArray[i] = originalArray[triangleIndices[i]];
         }
-        
+
         highlightGeometry.setIndex(new THREE.BufferAttribute(newIndexArray, 1));
         highlightGeometry.drawRange.count = triangleIndices.length;
-        
-        // 创建高亮材质
+
         const highlightMaterial = new THREE.MeshBasicMaterial({
             color: 0xff0000,
             opacity: 0.7,
@@ -472,29 +610,83 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             depthWrite: false,
             side: THREE.DoubleSide
         });
-        
-        // 创建高亮网格（确保每个测量都有独立的网格和材质）
+
         const highlightMesh = new THREE.Mesh(highlightGeometry, highlightMaterial);
         highlightMesh.renderOrder = 1;
-        
-        // 添加唯一标识以避免混乱
-        highlightMesh.userData = {
-            measurementId: `measurement-${Date.now()}-${Math.random()}`,
-            createdAt: Date.now(),
-            triangleCount: triangleIndices.length
-        };
-        
-        // 应用与目标模型相同的变换
+
+        // 应用变换
         highlightMesh.position.copy(this.sceneController.targetModel.position);
         highlightMesh.rotation.copy(this.sceneController.targetModel.rotation);
         highlightMesh.scale.copy(this.sceneController.targetModel.scale);
-        
-        // 更新矩阵
         highlightMesh.updateMatrix();
         highlightMesh.updateMatrixWorld(true);
-        
-        console.log("PlanimeteringTool: Persistent highlight mesh created successfully");
+
+        highlightMesh.userData = {
+            measurementId: `measurement-${Date.now()}-${Math.random()}`,
+            createdAt: Date.now(),
+            triangleCount: triangleIndices.length,
+            fallback: true
+        };
+
         return highlightMesh;
+    }
+
+    /**
+ * 初始化高亮系统（仅使用新的高级管理器）
+ */
+    private initializeHighlightOptimizer(): void {
+        if (!this.sceneController.targetModel || !this.geometryCache.indexedGeometry) {
+            console.warn('PlanimeteringTool: 无法初始化高亮系统，缺少必要组件');
+            return;
+        }
+
+        try {
+            // 初始化二级混合高亮系统（替代AdvancedHighlightManager）
+            this.highlightSystem = new EnhancedIntelligentHighlightSystem(
+                this.sceneController.renderer,
+                this.sceneController.scene,
+                this.sceneController.camera
+            );
+
+            let targetMesh: THREE.Mesh | null = null;
+
+            this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+                if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
+                    targetMesh = child as THREE.Mesh;
+                }
+            });
+
+            if (targetMesh) {
+                this.highlightSystem.setTargetMesh(targetMesh);
+                console.log('PlanimeteringTool: 高亮系统初始化完成');
+
+            }
+
+
+        } catch (error) {
+            console.error('PlanimeteringTool: 高亮系统初始化失败:', error);
+            this.highlightSystem = null;
+        }
+    }
+
+
+    /**
+     * 启用优化的实时高亮反馈
+     */
+    // 新方案: 直接调用新的 highlightSystem
+    private enableOptimizedRealTimeHighlight(): void {
+        if (!this.planimetering) return;
+
+        if (typeof this.planimetering.registerRealTimeSelectionCallback === 'function') {
+            this.planimetering.registerRealTimeSelectionCallback(
+                (triangles: number[]) => {
+                    this.highlightSystem?.updateHighlight(triangles);
+                }
+            );
+            console.log("PlanimeteringTool: 优化的实时高亮反馈已启用（智能系统）");
+        } else {
+            console.log("PlanimeteringTool: 第三方工具不支持实时高亮回调，使用传统模式");
+        }
     }
 
     /**
@@ -507,14 +699,18 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         }
 
         console.log("PlanimeteringTool: Work group children count:", this.workGroup.children.length);
-        
+
         // 查找高亮网格
         const highlightMesh = this.workGroup.children.find((child: THREE.Object3D) => {
             const mesh = child as THREE.Mesh;
             if (!mesh.isMesh || !mesh.material) return false;
             
-            const material = mesh.material as any;
-            return material.color && material.color.getHex() === 0xff0000;
+            // 检查材质是否有color属性
+            const material = mesh.material as THREE.Material;
+            return (material instanceof THREE.MeshBasicMaterial || 
+                    material instanceof THREE.MeshPhongMaterial || 
+                    material instanceof THREE.MeshStandardMaterial) && 
+                   material.color.getHex() === 0xff0000;
         });
 
         if (highlightMesh) {
@@ -524,7 +720,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             console.log("PlanimeteringTool: Highlight mesh geometry drawRange:", mesh.geometry.drawRange);
             console.log("PlanimeteringTool: Highlight mesh material:", mesh.material);
             console.log("PlanimeteringTool: Highlight mesh renderOrder:", mesh.renderOrder);
-            
+
             // 确保高亮网格可见
             if (!mesh.visible) {
                 console.log("PlanimeteringTool: Making highlight mesh visible");
@@ -558,26 +754,72 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     }
 
     /**
-     * 启动渲染循环，用于更新 Planimetering 工具的可视化效果
-     */
-    private startRenderLoop(): void {
+ * 优化的渲染循环，降低更新频率
+ */
+    // 1. 替换原有的优化渲染循环函数
+    private startOptimizedRenderLoop(): void {
         if (this.animationFrameId !== null) {
-            return; // 已经在运行
+            return;
         }
 
-        const renderLoop = () => {
-            if (this.isActive && this.planimetering) {
-                this.planimetering.update();
+        let lastUpdateTime = 0;
+        let adaptiveInterval = 16; // 初始60FPS，提供更高响应性
+        let consecutiveFrames = 0;
+        let frameTimeHistory: number[] = [];
+
+        const adaptiveRenderLoop = (currentTime: number) => {
+            const deltaTime = currentTime - lastUpdateTime;
+
+            if (deltaTime >= adaptiveInterval) {
+                if (this.isActive && this.planimetering) {
+                    const startTime = performance.now();
+                    this.planimetering.update();
+                    const updateTime = performance.now() - startTime;
+
+                    // 记录帧时间历史
+                    frameTimeHistory.push(updateTime);
+                    if (frameTimeHistory.length > 10) {
+                        frameTimeHistory.shift();
+                    }
+
+                    // 动态调整更新间隔
+                    const avgFrameTime = frameTimeHistory.reduce((a, b) => a + b, 0) / frameTimeHistory.length;
+
+                    if (avgFrameTime > 12) {
+                        // 如果平均处理时间超过12ms，降低频率
+                        adaptiveInterval = Math.min(16, adaptiveInterval + 2);
+                    } else if (consecutiveFrames > 20 && avgFrameTime < 6 && adaptiveInterval > 4) {
+                        // 如果连续多帧处理时间很短，提高频率
+                        adaptiveInterval = Math.max(4, adaptiveInterval - 1);
+                    }
+
+                    consecutiveFrames++;
+                    
+                    // 定期检查原始模型可见性（每60帧检查一次）
+                    if (consecutiveFrames % 60 === 0 && this.sceneController.targetModel && !this.sceneController.targetModel.visible) {
+                        console.log("PlanimeteringTool: Detected hidden target model, restoring visibility");
+                        this.sceneController.targetModel.visible = true;
+                        this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+                            if ((child as THREE.Mesh).isMesh) {
+                                child.visible = true;
+                            }
+                        });
+                    }
+                    
+                    // 强制渲染以确保面积测量工具的预览效果显示
+                    this.sceneController.forceRender();
+                }
+                lastUpdateTime = currentTime;
             }
-            
+
             if (this.isActive) {
-                this.animationFrameId = requestAnimationFrame(renderLoop);
+                this.animationFrameId = requestAnimationFrame(adaptiveRenderLoop);
             } else {
                 this.animationFrameId = null;
             }
         };
 
-        this.animationFrameId = requestAnimationFrame(renderLoop);
+        this.animationFrameId = requestAnimationFrame(adaptiveRenderLoop);
     }
 
     /**
@@ -608,37 +850,99 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         return labelObject;
     }
 
+    /* 预处理几何体，避免运行时处理延迟 */
+    private preProcessGeometry(): void {
+        if (!this.sceneController.targetModel) return;
+
+        let targetMesh: THREE.Mesh | null = null;
+        this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+            if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
+                targetMesh = child as THREE.Mesh;
+            }
+        })
+
+        if (!targetMesh) return;
+
+        console.log('PlanimeteringTool:预处理几何体');
+
+        //缓存原始几何体
+        this.geometryCache.originalGeometry = (targetMesh as THREE.Mesh).geometry;
+
+        //预处理索引几何体
+        if (!(targetMesh as THREE.Mesh).geometry.index) {
+            console.log('PlanimeteringTool:为非索引几何体创建索引');
+            const positionCount = (targetMesh as THREE.Mesh).geometry.attributes.position.count;
+            const indices = new Uint32Array(positionCount);
+            for (let i = 0; i < positionCount; i++) {
+                indices[i] = i;
+            }
+
+            //创建预处理的几何副本
+            this.geometryCache.indexedGeometry = (targetMesh as THREE.Mesh).geometry.clone();
+            this.geometryCache.indexedGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        } else {
+            this.geometryCache.indexedGeometry = (targetMesh as THREE.Mesh).geometry;
+        }
+
+        //确保有颜色属性
+        if (!this.geometryCache.indexedGeometry.attributes.color) {
+            const vertexCount = this.geometryCache.indexedGeometry.attributes.position.count;
+            const color = new Uint8Array(vertexCount * 3).fill(255);
+            this.geometryCache.indexedGeometry.setAttribute('color',
+                new THREE.BufferAttribute(color, 3, true)
+            );
+        }
+
+        //预计算边界信息
+        this.geometryCache.indexedGeometry.computeBoundingBox();
+        this.geometryCache.indexedGeometry.computeBoundingSphere();
+
+        this.geometryCache.isProcessed = true;
+        console.log('PlanimeteringTool:几何体预处理完成');
+
+
+    }
+
+
     dispose(): void {
         console.log("PlanimeteringTool: Disposing...");
-        
-        // 确保恢复相机控制
-        this.sceneController.orbitControls.enabled = true;
-        
-        // 停止渲染循环
+
+        // 清除任何待执行的重启调用
+        if (this.restartTimeoutId !== null) {
+            clearTimeout(this.restartTimeoutId);
+            this.restartTimeoutId = null;
+            console.log("PlanimeteringTool: 已清除待执行的重启调用");
+        }
+
+        // 停止优化的渲染循环
         this.stopRenderLoop();
-        
+
+        // 清理几何体缓存
+        if (this.geometryCache.indexedGeometry && this.geometryCache.indexedGeometry !== this.geometryCache.originalGeometry) {
+            this.geometryCache.indexedGeometry.dispose();
+        }
+        this.geometryCache = {};
+
+        // 恢复相机控制
+        this.sceneController.orbitControls.enabled = true;
+        this.sceneController.orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+
         if (this.planimetering) {
             this.planimetering.dispose();
             this.planimetering = null;
         }
-        
-        // 清理工作组（只清理临时的工作组，不影响已保存的高亮网格）
+
         if (this.workGroup && this.workGroup.parent) {
             this.workGroup.parent.remove(this.workGroup);
             this.workGroup = null;
         }
-        
-        // 注意：不清理已保存的测量数据，因为它们的高亮网格已经被AnnotationManager管理
-        // 只清理工具状态相关的数据
+
         this.currentMeasurement = null;
         this.shouldExitOnNextEsc = false;
-        
-        console.log("PlanimeteringTool: Disposed. All measurements are managed by AnnotationManager.");
-        console.log("PlanimeteringTool: Saved measurements remain visible.");
-        
+        this.firstClickPosition = null;
         this.isActive = false;
         this.isInitialized = false;
-        
+
         super.dispose();
     }
-} 
+}

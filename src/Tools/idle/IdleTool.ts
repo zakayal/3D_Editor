@@ -1,6 +1,6 @@
 //@ts-ignore
 import * as THREE from 'three';
-import { BaseTool, ITool } from '../../Components/Base-tools/BaseTool';
+import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
 import { InteractionEvent, ToolMode, Annotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
 
 export class IdleTool extends BaseTool implements ITool {
@@ -24,10 +24,6 @@ export class IdleTool extends BaseTool implements ITool {
         console.log("IdleTool activated.");
         // 允许相机控制
         this.sceneController.orbitControls.enabled = true;
-
-        // 确保 CSS2DRenderer 的 domElement 能够接收事件，以便后续拾取
-        // 注意：通常这里设为 'none' 以免干扰主 canvas，但如果我们要拾取 CSS2DObject，就需要特殊处理。
-        // 由于我们使用 3D 代理对象拾取，所以这里保持 'none' 是正确的，由代理对象处理点击。
         this.sceneController.css2dRenderer.domElement.style.pointerEvents = 'none';
 
         this.eventEmitter.emit('modeChanged', { mode: ToolMode.Idle, enabled: true });
