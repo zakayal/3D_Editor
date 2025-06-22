@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+      "target": "ESNext", // 编译目标ECMAScript版本
+      "lib": ["DOM", "DOM.Iterable", "ESNext"], // 编译过程中包含的库文件
+      "module": "ESNext", // 指定模块代码生成： 'none', 'commonjs', 'amd', 'system', 'umd', 'es2015', 'esnext'
+      "moduleResolution": "node", // 模块解析策略
+      "jsx": "react-jsx", // 支持JSX，并使用React 17+的新JSX转换
+      "strict": true, // 启用所有严格类型检查选项
+      "esModuleInterop": true, // 允许从没有设置默认导出的模块中默认导入
+      "skipLibCheck": true, // 跳过所有声明文件的类型检查
+      "forceConsistentCasingInFileNames": true, // 禁止对同一文件使用不同大小写的引用
+      "resolveJsonModule": true, // 允许导入 .json 文件
+      "isolatedModules": true, // 确保每个文件可以被安全地单独编译
+      "noEmit": true, // 不输出文件，因为Vite会处理构建。如果用tsc直接编译则设为false并配置outDir
+      "allowJs": true, // 允许编译JavaScript文件
+      "baseUrl": "./src", // 用于模块解析的基目录
+      "paths": { // 模块路径映射 (可选)
+        "@/*": ["*"]
+      }
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.js"], // 指定需要编译的文件范围
+    "exclude": ["node_modules", "dist"] // 指定排除的文件/目录
+  }

@@ -1,0 +1,166 @@
+/* src/style.css (优化后版本) */
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden; /* 推荐：取消注释，防止出现不必要的滚动条 */
+    background: #333; /* 为整个页面设置深色背景 */
+}
+
+#root {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+/* 移除旧的 #webgl-canvas 规则，因为它不再存在 */
+
+/* 新增：为 API 动态创建的 canvas 设置样式 */
+#root > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block; /* 移除 canvas 元素下方的默认空隙 */
+}
+
+/* --- 容器 --- */
+#control-panel-root {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    pointer-events: auto; /* 容器本身需要响应事件 */
+}
+
+/* --- 基础标签样式 --- */
+.measurement-label {
+    color: white;
+    background: rgba(0, 0, 0, 0.75);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: sans-serif;
+    pointer-events: none; /* 标签本身不响应点击 */
+    white-space: nowrap;
+    border: 1px solid rgba(255, 255, 255, 0.5); /* 默认边框 */
+    transition: all 0.2s ease; /*为高亮效果添加过渡 */
+}
+
+/* --- 不同类型标签的特定样式 --- */
+.straight-label {
+    border-color: #FFEB3B; /* 直线测量 - 黄色边框 */
+}
+
+.saved-surface-label {
+    border-color: #F44336; /* 表面测量 - 红色边框 */
+}
+
+/* 新增：为高亮标注提供基础样式 */
+.highlight-label {
+    border-color: #F56958; /* 高亮标注 - 橙色边框 */
+}
+
+
+/* --- 选中状态的标签高亮 --- */
+.highlighted-label {
+    /* 使用 box-shadow 实现更柔和的发光效果，!important确保覆盖原有样式 */
+    box-shadow: 0 0 10px 2px #00e676 !important;
+    border-color: #00e676 !important; /* 选中时 - 亮绿色边框 */
+}
+
+/* --- 删除按钮 --- */
+.delete-button {
+    background: rgba(244, 67, 54, 0.8);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    transition: background-color 0.2s ease;
+}
+
+.delete-button:hover {
+    background: rgba(211, 47, 47, 1.0);
+}
+
+.delete-button svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+
+/* --- 表面测距UI --- */
+.measurement-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid #444;
+}
+
+.current-length-display {
+    color: #FFF;
+    font-size: 16px;
+    font-weight: bold;
+    text-align: center;
+    padding: 5px 0;
+    margin-bottom: 5px;
+    border-bottom: 1px solid #777;
+}
+
+.measurement-controls .control-buttons {
+    display: flex;
+    justify-content: space-around;
+    gap: 8px;
+}
+
+.measurement-controls .control-button {
+    flex: 1;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    font-weight: bold;
+}
+
+.measurement-controls .cancel-button {
+    background-color: #f44336;
+    color: white;
+}
+.measurement-controls .cancel-button:hover {
+    background-color: #d32f2f;
+}
+
+.measurement-controls .save-button {
+    background-color: #4CAF50;
+    color: white;
+}
+.measurement-controls .save-button:hover {
+    background-color: #45a049;
+}
+.measurement-controls .save-button:disabled {
+    background-color: #777;
+    cursor: not-allowed;
+}
+
+
+/* --- 自定义光标 --- */
+.measure-cursor {
+    /* 注意：这个图片路径需要有效，请确保在 public/images/ 目录下有此文件 */
+    cursor: url('/cursor-scale.png') 8 8, crosshair;
+}
+
+.default-cursor {
+    cursor: auto;
+}
