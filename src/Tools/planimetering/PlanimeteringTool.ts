@@ -6,9 +6,9 @@ import * as THREE from 'three';
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-import { EnhancedIntelligentHighlightSystem } from '../../Utils/BasedHighlight/integrated_highlight_system'
+import { EnhancedIntelligentHighlightSystem } from '../../utils/BasedHighlight/integrated_highlight_system'
 
-/**
+/**u
  * Planimetering 工具 - 用于测量选定区域的面积
  * 这是一个适配器类，将 Planimetering 函数式工具适配为符合 ITool 接口的类
  */
@@ -33,9 +33,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         isProcessed?: boolean;
     } = {};
 
-    // private textureHighlight: TextureBasedHighlightSystem | null = null;
-    // private shaderHighlight: ShaderBasedHighlightSystem | null = null;
-
     private highlightSystem: EnhancedIntelligentHighlightSystem | null = null;
 
     constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) {
@@ -53,10 +50,18 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
     activate(): void {
         console.log("PlanimeteringTool: activate() 被调用");
-        console.log("PlanimeteringTool: 当前状态 - isActive:", this.isActive, "isInitialized:", this.isInitialized);
+
+        //修正
+        const activeModel = this.sceneController.activeModelForRaycasting;
+        if (!activeModel) {
+            console.error('PlanimeteringTool: Cannot activate, no active model for raycasting found.');
+            this.eventEmitter.emit('error', { message: '面积测量工具无法激活,未找到可测量的模型' })
+            //切换回空闲模式
+            this.eventEmitter.emit('toolModeChangeRequested', { mode: ToolMode.Idle })
+            return;
+        }
 
         if (this.isActive) {
-            console.log("PlanimeteringTool: 工具已经激活，跳过重复激活");
             return;
         }
 
@@ -85,9 +90,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
         // 启动渲染循环
         this.startOptimizedRenderLoop();//使用优化后的渲染循环
-        
-        // 强制进行一次渲染以确保模型可见
-        this.sceneController.forceRender();
 
         console.log("PlanimeteringTool: Activated successfully.");
         this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: true });
@@ -151,19 +153,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         //初始化重置状态，强制下次激活时重新初始化
         this.isInitialized = false;
 
-        // 确保原始模型可见性得到恢复
-        if (this.sceneController.targetModel) {
-            this.sceneController.targetModel.visible = true;
-            this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
-                if ((child as THREE.Mesh).isMesh) {
-                    child.visible = true;
-                }
-            });
-            console.log("PlanimeteringTool: Restored original model visibility on deactivate");
-        }
-
-        console.log("PlanimeteringTool: Deactivated. Saved measurements remain visible.");
-
         // 通知 UI 工具模式已停用
         this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: false });
     }
@@ -174,41 +163,30 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
 
         try {
+
+            const activeModel = this.sceneController.activeModelForRaycasting;
+            if (!activeModel) {
+                throw new Error('no active model available for planimetering');
+            }
+
+            const targetMesh = this.findFirstMeshInModel(activeModel);
+
             // 检查是否有有效的目标模型
-            if (!this.sceneController.targetModel) {
-                throw new Error("No target model available for planimetering");
-            }
-
-            // 查找第一个有效的网格对象
-            let targetMesh: THREE.Mesh | null = null;
-            this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
-                if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
-                    targetMesh = child as THREE.Mesh;
-                }
-            });
-
             if (!targetMesh) {
-                throw new Error("No valid mesh object found in target model for planimetering");
+                throw new Error("No vaild mesh object found in active model for planimetering");
             }
-
-            console.log("PlanimeteringTool: Found target mesh:", targetMesh);
-            console.log("PlanimeteringTool: Target model children count:", this.sceneController.targetModel.children.length);
-            console.log("PlanimeteringTool: Target model children:", this.sceneController.targetModel.children);
-
             // 创建一个专门的工作组，确保网格在正确的位置
             this.workGroup = new THREE.Group();
 
             // 创建新的网格对象，避免克隆时的循环引用问题
             const meshClone = new THREE.Mesh();
-            meshClone.geometry = (targetMesh as THREE.Mesh).geometry; // 共享几何体，避免重复数据
-            meshClone.material = (targetMesh as THREE.Mesh).material; // 共享材质
+            meshClone.geometry = targetMesh.geometry; // 共享几何体，避免重复数据
+            meshClone.material = targetMesh.material; // 共享材质
 
             // 拷贝变换信息
-            meshClone.position.copy((targetMesh as THREE.Mesh).position);
-            meshClone.rotation.copy((targetMesh as THREE.Mesh).rotation);
-            meshClone.scale.copy((targetMesh as THREE.Mesh).scale);
-
-            // 不拷贝 userData，避免循环引用
+            meshClone.position.copy(targetMesh.position);
+            meshClone.rotation.copy(targetMesh.rotation);
+            meshClone.scale.copy(targetMesh.scale);
 
             // 确保工作组有5个子对象，第4个是我们的网格
             for (let i = 0; i < 4; i++) {
@@ -217,9 +195,9 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             this.workGroup.add(meshClone);
 
             // 确保工作组的变换与目标模型同步
-            this.workGroup.position.copy(this.sceneController.targetModel.position);
-            this.workGroup.rotation.copy(this.sceneController.targetModel.rotation);
-            this.workGroup.scale.copy(this.sceneController.targetModel.scale);
+            this.workGroup.position.copy(activeModel.position);
+            this.workGroup.rotation.copy(activeModel.rotation);
+            this.workGroup.scale.copy(activeModel.scale);
 
             // 将工作组添加到场景中
             this.sceneController.scene.add(this.workGroup);
@@ -279,16 +257,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 this.workGroup
             );
 
-            // 确保原始模型仍然可见，防止被第三方库意外隐藏
-            if (this.sceneController.targetModel) {
-                this.sceneController.targetModel.visible = true;
-                this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
-                    if ((child as THREE.Mesh).isMesh) {
-                        child.visible = true;
-                    }
-                });
-                console.log("PlanimeteringTool: Ensured original model visibility");
-            }
+
 
             // 注册事件发射器
             this.planimetering.registerEventEmitter(this.eventEmitter);
@@ -307,7 +276,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                 // 如果是第一次回调（高亮显示）
                 if (data.isCalculating) {
                     console.log("PlanimeteringTool: 高亮显示已就绪，面积计算中...");
-                    
+
                     // 立即更新高亮显示
                     if (this.highlightSystem) {
                         if (data.lassoPath && data.lassoPath.length > 6) {
@@ -317,23 +286,23 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                             this.highlightSystem.updateHighlight(data.triangles);
                         }
                     }
-                    
+
                     // 检查高亮网格状态
                     this.debugHighlightMesh();
-                    
+
                     // 通知系统高亮显示已完成，但面积计算正在进行
                     this.eventEmitter.emit('notification', {
                         message: '高亮显示已完成，正在计算面积...',
                         type: 'info'
                     });
-                    
+
                     return; // 第一次回调结束，等待第二次回调
                 }
 
                 // 第二次回调（计算结果）
                 if (data.area !== null) {
                     console.log("PlanimeteringTool: 面积计算完成:", data.area);
-                    
+
                     // 存储当前测量数据
                     this.currentMeasurement = { triangles: data.triangles, area: data.area };
 
@@ -466,14 +435,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             clearTimeout(this.restartTimeoutId);
             this.restartTimeoutId = null;
         }
-
-        //重新启动下一次测量
-        // this.restartTimeoutId = window.setTimeout(() => {
-        //     if (this.isActive && this.planimetering) {
-        //         this.planimetering.startMeasurement();
-        //     }
-        //     this.restartTimeoutId = null;
-        // }, 100)
     }
 
     /**
@@ -570,16 +531,18 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     }
 
     /**
- * 降级方法：传统的持久化网格创建
- */
+    * 降级方法：传统的持久化网格创建
+    */
     private createFallbackPersistentMesh(triangleIndices: number[]): THREE.Mesh {
-        if (!this.sceneController.targetModel || !this.geometryCache.indexedGeometry) {
+
+        const activeModel = this.sceneController.activeModelForRaycasting;
+        if (!activeModel || !this.geometryCache.indexedGeometry) {
             throw new Error("无法创建持久化高亮网格：缺少必要的几何体数据");
         }
 
         // 查找目标网格
         let targetMesh: THREE.Mesh | null = null;
-        this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+        activeModel.traverse((child: THREE.Object3D) => {
             if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
                 targetMesh = child as THREE.Mesh;
             }
@@ -615,9 +578,9 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         highlightMesh.renderOrder = 1;
 
         // 应用变换
-        highlightMesh.position.copy(this.sceneController.targetModel.position);
-        highlightMesh.rotation.copy(this.sceneController.targetModel.rotation);
-        highlightMesh.scale.copy(this.sceneController.targetModel.scale);
+        highlightMesh.position.copy(activeModel.position);
+        highlightMesh.rotation.copy(activeModel.rotation);
+        highlightMesh.scale.copy(activeModel.scale);
         highlightMesh.updateMatrix();
         highlightMesh.updateMatrixWorld(true);
 
@@ -632,10 +595,11 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     }
 
     /**
- * 初始化高亮系统（仅使用新的高级管理器）
- */
+    * 初始化高亮系统（仅使用新的高级管理器）
+    */
     private initializeHighlightOptimizer(): void {
-        if (!this.sceneController.targetModel || !this.geometryCache.indexedGeometry) {
+        const activeModel = this.sceneController.activeModelForRaycasting;
+        if (!activeModel || !this.geometryCache.indexedGeometry) {
             console.warn('PlanimeteringTool: 无法初始化高亮系统，缺少必要组件');
             return;
         }
@@ -650,7 +614,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
             let targetMesh: THREE.Mesh | null = null;
 
-            this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+            activeModel.traverse((child: THREE.Object3D) => {
                 if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
                     targetMesh = child as THREE.Mesh;
                 }
@@ -701,16 +665,27 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         console.log("PlanimeteringTool: Work group children count:", this.workGroup.children.length);
 
         // 查找高亮网格
-        const highlightMesh = this.workGroup.children.find((child: THREE.Object3D) => {
+        const highlightMesh = this.workGroup.children.find((child: THREE.Object3D) =>{
+            if(!(child as THREE.Mesh).isMesh)
+            {
+                return false;
+            }
+
             const mesh = child as THREE.Mesh;
-            if (!mesh.isMesh || !mesh.material) return false;
-            
-            // 检查材质是否有color属性
-            const material = mesh.material as THREE.Material;
-            return (material instanceof THREE.MeshBasicMaterial || 
-                    material instanceof THREE.MeshPhongMaterial || 
-                    material instanceof THREE.MeshStandardMaterial) && 
-                   material.color.getHex() === 0xff0000;
+            const material = mesh.material;
+
+            if(Array.isArray(material))
+            {
+                return false;
+            }
+
+            if(material && 'color' in material &&(material as any).color instanceof THREE.Color)
+            {
+                const materialColor = (material as { color:THREE.Color}).color;
+                return materialColor.getHex() === 0xff0000;
+            }
+
+            return false;
         });
 
         if (highlightMesh) {
@@ -754,8 +729,8 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     }
 
     /**
- * 优化的渲染循环，降低更新频率
- */
+    * 优化的渲染循环，降低更新频率
+    */
     // 1. 替换原有的优化渲染循环函数
     private startOptimizedRenderLoop(): void {
         if (this.animationFrameId !== null) {
@@ -794,20 +769,19 @@ export class PlanimeteringTool extends BaseTool implements ITool {
                     }
 
                     consecutiveFrames++;
-                    
+
+                    const activeModel = this.sceneController.activeModelForRaycasting;
                     // 定期检查原始模型可见性（每60帧检查一次）
-                    if (consecutiveFrames % 60 === 0 && this.sceneController.targetModel && !this.sceneController.targetModel.visible) {
+                    if (consecutiveFrames % 60 === 0 && activeModel && !activeModel.visible) {
                         console.log("PlanimeteringTool: Detected hidden target model, restoring visibility");
-                        this.sceneController.targetModel.visible = true;
-                        this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
+                        activeModel.visible = true;
+                        activeModel.traverse((child: THREE.Object3D) => {
                             if ((child as THREE.Mesh).isMesh) {
                                 child.visible = true;
                             }
                         });
                     }
-                    
-                    // 强制渲染以确保面积测量工具的预览效果显示
-                    this.sceneController.forceRender();
+
                 }
                 lastUpdateTime = currentTime;
             }
@@ -852,36 +826,34 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
     /* 预处理几何体，避免运行时处理延迟 */
     private preProcessGeometry(): void {
-        if (!this.sceneController.targetModel) return;
 
-        let targetMesh: THREE.Mesh | null = null;
-        this.sceneController.targetModel.traverse((child: THREE.Object3D) => {
-            if (!targetMesh && (child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
-                targetMesh = child as THREE.Mesh;
-            }
-        })
+        const activeModel = this.sceneController.activeModelForRaycasting
+
+        if (!activeModel) return;
+
+        const targetMesh = this.findFirstMeshInModel(activeModel);
 
         if (!targetMesh) return;
 
         console.log('PlanimeteringTool:预处理几何体');
 
         //缓存原始几何体
-        this.geometryCache.originalGeometry = (targetMesh as THREE.Mesh).geometry;
+        this.geometryCache.originalGeometry = targetMesh.geometry;
 
         //预处理索引几何体
-        if (!(targetMesh as THREE.Mesh).geometry.index) {
+        if (!targetMesh.geometry.index) {
             console.log('PlanimeteringTool:为非索引几何体创建索引');
-            const positionCount = (targetMesh as THREE.Mesh).geometry.attributes.position.count;
+            const positionCount = targetMesh.geometry.attributes.position.count;
             const indices = new Uint32Array(positionCount);
             for (let i = 0; i < positionCount; i++) {
                 indices[i] = i;
             }
 
             //创建预处理的几何副本
-            this.geometryCache.indexedGeometry = (targetMesh as THREE.Mesh).geometry.clone();
+            this.geometryCache.indexedGeometry = targetMesh.geometry.clone();
             this.geometryCache.indexedGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
         } else {
-            this.geometryCache.indexedGeometry = (targetMesh as THREE.Mesh).geometry;
+            this.geometryCache.indexedGeometry = targetMesh.geometry;
         }
 
         //确保有颜色属性
@@ -903,6 +875,24 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
     }
 
+    /**
+    * Helper method: Finds and returns the first valid mesh within a model.
+    * This pattern is robust and works well with TypeScript's control flow analysis.
+    * @param model The Object3D to search within.
+    * @returns The first found THREE.Mesh, or null if none is found.
+    */
+    private findFirstMeshInModel(model: THREE.Object3D): THREE.Mesh | null {
+        let foundMesh: THREE.Mesh | null = null;
+        model.traverse((child: THREE.Object3D) => {
+            if (foundMesh) { // Optimization: stop searching once found
+                return;
+            }
+            if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
+                foundMesh = child as THREE.Mesh;
+            }
+        });
+        return foundMesh;
+    }
 
     dispose(): void {
         console.log("PlanimeteringTool: Disposing...");
@@ -945,4 +935,4 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
         super.dispose();
     }
-}
+} 

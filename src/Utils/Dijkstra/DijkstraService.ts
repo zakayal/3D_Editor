@@ -9,160 +9,239 @@ import { MinPriorityQueue } from '../MinPriorityQueue/MinPriorityQueue';
  * 它构建模型的网格图，并使用 Dijkstra 算法计算最短路径。
  */
 export class DijkstraService implements IDijkstraService {
-    private meshGraph: MeshGraphData | null = null;
-    private graphBuilderWorker: Worker | null = null;
-    private eventEmitter: IEventEmitter; // 添加 eventEmitter 引用
-    private isInitializing: boolean = false; // 防止重复初始化
+    // 多图存储：每个 partId 对应一个独立的图数据
+    private meshGraphs: Map<string, MeshGraphData> = new Map();
+
+    // Worker 管理：每个 partId 可能有自己的 Worker
+    private activeWorkers: Map<string, Worker> = new Map();
+
+    // 上下文状态追踪
+    private initializingContexts: Set<string> = new Set();
+
+    private eventEmitter: IEventEmitter;
 
     constructor(eventEmitter: IEventEmitter) {
-        this.eventEmitter = eventEmitter // 初始化 eventEmitter
-    }
-
-    public initialize(sceneController: ISceneController): boolean {
-        console.log("[DijkstraService.initialize] Initializing...");
-        if (this.isInitializing) {
-            console.warn("[DijkstraService.initialize] Already initializing.");
-            return false; // 或者根据情况返回当前状态
-        }
-
-        if (!sceneController) {
-            console.error("[DijkstraService.initialize] SceneController is null or undefined");
-            this.eventEmitter.emit('error', { message: "DijkstraService: SceneController not provided." });
-            return false;
-        }
-
-        const geometry = sceneController.getTargetMeshGeometry();
-        const worldMatrix = sceneController.getTargetMeshWorldMatrix();
-
-        if (!geometry || !worldMatrix) {
-            console.error("[DijkstraService.initialize] Target mesh geometry or world matrix not available.");
-            this.eventEmitter.emit('error', { message: "DijkstraService: Target mesh data not available." });
-            return false;
-        }
-        console.log("[DijkstraService.initialize] Target mesh data found. Starting graph build via worker.");
-        this.isInitializing = true;
-        this.meshGraph = null; // 清除旧图
-
-        // 终止可能存在的旧 Worker
-        if (this.graphBuilderWorker) {
-            this.graphBuilderWorker.terminate();
-            this.graphBuilderWorker = null;
-        }
-
-        try {
-            // 路径相对于当前文件或项目的构建输出。
-            // 如果使用 Vite 或类似现代构建工具，new URL(..., import.meta.url) 是推荐方式。
-            // 对于其他打包器，可能需要查阅其关于 Web Worker 路径的文档。
-            this.graphBuilderWorker = new Worker(new URL('../../Workers/dijkstraGraphBuilder.worker.ts', import.meta.url), { type: 'module' });
-
-            this.graphBuilderWorker.onmessage = (event: MessageEvent) => {
-                console.log('event data:', event.data);
-                
-                const { type, graph, vertexMapping: _vertexMapping, message, details, stage, percentage, current, total } = event.data;
-
-                if (type === 'PROGRESS') {
-                    // 处理进度更新
-                    console.log(`[DijkstraService.worker] Progress: ${stage} ${percentage}% (${current}/${total})`);
-                    this.eventEmitter.emit('notification', { 
-                        message: `图形构建进度: ${stage} ${percentage}%` 
-                    });
-                } else if (type === 'GRAPH_BUILT') {
-                    this.isInitializing = false; // Worker 完成，结束初始化状态
-                    console.log("[DijkstraService.worker] Graph built successfully by worker.");
-                    const deserializedVertices = graph.vertices.map((vArray: number[]) => new THREE.Vector3().fromArray(vArray));
-                    const deserializedAdjacency = new Map<number, { neighborIndex: number, weight: number }[]>(graph.adjacency);
-
-                    this.meshGraph = {
-                        vertices: deserializedVertices,
-                        adjacency: deserializedAdjacency,
-                        // vertexMapping: vertexMapping // 如果需要在主线程使用 vertexMapping
-                    };
-                    console.log("[DijkstraService.worker] Mesh graph processed.", {
-                        vertices: this.meshGraph.vertices.length,
-                        edges: this.countEdges(this.meshGraph.adjacency),
-                        // vertexMappingLength: vertexMapping?.length
-                    });
-                    // 通知 API 图已准备好
-                    
-                    this.eventEmitter.emit('dijkstraReady', true); // 自定义事件通知API
-                } else if (type === 'ERROR') {
-                    this.isInitializing = false; // 出错时也要结束初始化状态
-                    console.error("[DijkstraService.worker] Error from graph builder worker:", message, details);
-                    this.meshGraph = null;
-                    this.eventEmitter.emit('error', { message: `Dijkstra Worker Error: ${message}`, details });
-                    this.eventEmitter.emit('dijkstraReady', false);
-                }
-            };
-
-            this.graphBuilderWorker.onerror = (error: ErrorEvent) => {
-                this.isInitializing = false;
-                console.error("[DijkstraService.worker] Worker error:", error);
-                this.meshGraph = null;
-                this.eventEmitter.emit('error', { message: "DijkstraService: Worker encountered an error.", details: error.message });
-                this.eventEmitter.emit('dijkstraReady', false);
-            };
-
-            // 准备发送给 Worker 的数据
-            const positionAttribute = geometry.attributes.position as THREE.BufferAttribute;
-            const indexAttribute = geometry.index;
-
-            const geometryData = {
-                position: positionAttribute.array as Float32Array,
-                index: indexAttribute ? (indexAttribute.array as Uint16Array | Uint32Array) : undefined,
-            };
-            const worldMatrixArray = worldMatrix.toArray();
-
-            // 发送数据到 Worker
-            // 注意：Float32Array 和 UintArray 可以作为 Transferable Objects 发送以提高性能，但这里简单发送副本。
-            // 如果要转移所有权：this.graphBuilderWorker.postMessage({ type: 'BUILD_GRAPH', geometryData, worldMatrixArray }, [geometryData.position.buffer, geometryData.index?.buffer].filter(Boolean));
-            this.graphBuilderWorker.postMessage({
-                type: 'BUILD_GRAPH',
-                geometryData: { // 发送可序列化的数据副本
-                    position: new Float32Array(geometryData.position),
-                    index: geometryData.index ? (geometryData.index.BYTES_PER_ELEMENT === 2 ? new Uint16Array(geometryData.index) : new Uint32Array(geometryData.index)) : undefined
-                },
-                worldMatrixArray
-            });
-
-            // initialize 方法现在启动异步过程，可以返回 true 表示"已开始"
-            // 真正的"就绪"状态将通过 isReady() 和事件来体现
-            return true;
-
-        } catch (error) {
-            this.isInitializing = false;
-            console.error("[DijkstraService.initialize] Failed to create or communicate with worker.", error);
-            this.meshGraph = null;
-            this.eventEmitter.emit('error', { message: "DijkstraService: Failed to init worker.", details: error });
-            return false;
-        }
-    }
-
-    /** 检查服务是否已准备好（图已构建） */
-    public isReady(): boolean {
-        return this.meshGraph !== null;
-    }
-
-
-    /** 计算边数 (用于日志) */
-    private countEdges(adjacency: Map<number, { neighborIndex: number; weight: number; }[]>): number {
-        let count = 0;
-        adjacency.forEach(neighbors => count += neighbors.length);
-        return count / 2; // Each edge is counted twice
+        this.eventEmitter = eventEmitter;
     }
 
     /**
-     * 查找距离给定世界坐标点最近的网格顶点索引。
+     * 为指定部位ID初始化图数据（新方法）
+     * @param partId 部位的唯一标识符
+     * @param model 对应的3D模型
+     * @returns 是否成功启动初始化过程
      */
-    public getClosestVertexIndex(pointInWorld: THREE.Vector3): number | null {
-        if (!this.isReady() || !this.meshGraph || this.meshGraph.vertices.length === 0) { // 确保 isReady() 检查
-            console.warn("[DijkstraService.getClosestVertexIndex] Mesh graph not ready or no vertices.");
+    public initializeForContext(partId: string, model: THREE.Group): boolean {
+        console.log(`[DijkstraService] 开始为部位 ${partId} 初始化图数据...`);
+
+        // 检查是否已经在初始化中
+        if (this.initializingContexts.has(partId)) {
+            console.warn(`[DijkstraService] 部位 ${partId} 已经在初始化中`);
+            return false;
+        }
+
+        // 检查是否已经存在图数据
+        if (this.meshGraphs.has(partId)) {
+            console.warn(`[DijkstraService] 部位 ${partId} 的图数据已存在`);
+            return true;
+        }
+
+        // 获取模型的几何数据
+        const geometryData = this._extractGeometryFromModel(model);
+        if (!geometryData) {
+            console.error(`[DijkstraService] 无法从模型中提取几何数据: ${partId}`);
+            this.eventEmitter.emit('error', {
+                message: `DijkstraService: 无法为部位 ${partId} 提取几何数据`
+            });
+            return false;
+        }
+
+        // 将 partId 加入初始化集合
+        this.initializingContexts.add(partId);
+
+        try {
+            // 创建新的 Web Worker
+            const worker = new Worker(
+                new URL('../../Workers/dijkstraGraphBuilder.worker.ts', import.meta.url),
+                { type: 'module' }
+            );
+
+            // 设置 Worker 消息处理
+            worker.onmessage = (event: MessageEvent) => {
+                this._handleWorkerMessage(event, partId);
+            };
+
+            worker.onerror = (error: ErrorEvent) => {
+                this._handleWorkerError(error, partId);
+            };
+
+            // 存储 Worker 引用
+            this.activeWorkers.set(partId, worker);
+
+            // 发送 BUILD_GRAPH 指令
+            worker.postMessage({
+                type: 'BUILD_GRAPH',
+                partId: partId, // 传递上下文信息
+                geometryData: {
+                    position: new Float32Array(geometryData.position),
+                    index: geometryData.index ?
+                        (geometryData.index.BYTES_PER_ELEMENT === 2 ?
+                            new Uint16Array(geometryData.index) :
+                            new Uint32Array(geometryData.index)
+                        ) : undefined
+                },
+                worldMatrixArray: geometryData.worldMatrixArray
+            });
+
+            console.log(`[DijkstraService] 为部位 ${partId} 启动了图构建 Worker`);
+            return true;
+
+        } catch (error) {
+            this.initializingContexts.delete(partId);
+            console.error(`[DijkstraService] 为部位 ${partId} 创建 Worker 失败:`, error);
+            this.eventEmitter.emit('error', {
+                message: `DijkstraService: 为部位 ${partId} 初始化失败`,
+                details: error
+            });
+            return false;
+        }
+    }
+
+    /**
+     * 处理 Worker 消息（根据流程图实现）
+     */
+    private _handleWorkerMessage(event: MessageEvent, partId: string): void {
+        const { type, graph, message, details, stage, percentage } = event.data;
+
+        switch (type) {
+            case 'PROGRESS':
+                // 处理进度信息
+                this.eventEmitter.emit('notification', {
+                    message: `部位 ${partId} 图构建进度: ${stage} ${percentage}%`
+                });
+                break;
+
+            case 'GRAPH_BUILT':
+                // 反序列化图数据
+                const deserializedVertices = graph.vertices.map((vArray: number[]) =>
+                    new THREE.Vector3().fromArray(vArray)
+                );
+                const deserializedAdjacency = new Map<number, { neighborIndex: number, weight: number }[]>(
+                    graph.adjacency
+                );
+
+                const meshGraphData: MeshGraphData = {
+                    vertices: deserializedVertices,
+                    adjacency: deserializedAdjacency,
+                };
+
+                // 存入 meshGraphs Map
+                this.meshGraphs.set(partId, meshGraphData);
+
+                // 移除 partId 从 initializingContexts
+                this.initializingContexts.delete(partId);
+
+                // 清理 Worker
+                const worker = this.activeWorkers.get(partId);
+                if (worker) {
+                    worker.terminate();
+                    this.activeWorkers.delete(partId);
+                }
+
+                console.log(`[DijkstraService] 部位 ${partId} 的图数据构建完成`);
+
+                // 发出 dijkstraReady 事件
+                this.eventEmitter.emit('dijkstraReady', true);
+                break;
+
+            case 'ERROR':
+                this._handleWorkerError(new ErrorEvent('worker', {
+                    message: message,
+                    error: details
+                }), partId);
+                break;
+
+            default:
+                console.warn(`[DijkstraService] 未知的 Worker 消息类型: ${type}`);
+        }
+    }
+
+    /**
+     * 处理 Worker 错误
+     */
+    private _handleWorkerError(error: ErrorEvent, partId: string): void {
+        console.error(`[DijkstraService] 部位 ${partId} 的 Worker 错误:`, error);
+
+        // 移除初始化状态
+        this.initializingContexts.delete(partId);
+
+        // 清理 Worker
+        const worker = this.activeWorkers.get(partId);
+        if (worker) {
+            worker.terminate();
+            this.activeWorkers.delete(partId);
+        }
+
+        this.eventEmitter.emit('error', {
+            message: `DijkstraService: 部位 ${partId} 图构建失败`,
+            details: error.message
+        });
+        this.eventEmitter.emit('dijkstraReady', false);
+    }
+
+    /**
+     * 从3D模型中提取几何数据
+     */
+    private _extractGeometryFromModel(model: THREE.Group): {
+        position: Float32Array;
+        index?: Uint16Array | Uint32Array;
+        worldMatrixArray: number[];
+    } | null {
+        const targetMesh = this.findFirstMeshInModel(model)
+
+        if(!targetMesh)
+        {
+            return null;
+        }
+
+        const geometry = targetMesh.geometry as THREE.BufferGeometry;
+        const positionAttribute = geometry.attributes.position as THREE.BufferAttribute;
+        const indexAttribute = geometry.index;
+
+        return {
+            position: positionAttribute.array as Float32Array,
+            index: indexAttribute ? (indexAttribute.array as Uint16Array | Uint32Array) : undefined,
+            worldMatrixArray: targetMesh.matrixWorld.toArray()
+        };
+    }
+
+    /**
+     * 检查特定上下文是否准备就绪
+     */
+    public isContextReady(partId: string): boolean {
+        return this.meshGraphs.has(partId) && !this.initializingContexts.has(partId);
+    }
+
+    /**
+     * 检查是否有任何图数据可用
+     */
+    public isReady(): boolean {
+        return this.meshGraphs.size > 0;
+    }
+
+    /**
+     * 上下文感知的最近顶点查找
+     */
+    public getClosestVertexIndex(pointInWorld: THREE.Vector3, partId: string): number | null {
+        const meshGraph = this.meshGraphs.get(partId);
+        if (!meshGraph || meshGraph.vertices.length === 0) {
+            console.warn(`[DijkstraService] 部位 ${partId} 的图数据未准备好或无顶点`);
             return null;
         }
 
         let closestIndex = -1;
         let minDistanceSq = Infinity;
 
-        this.meshGraph.vertices.forEach((vertex: THREE.Vector3, index: number) => {
+        meshGraph.vertices.forEach((vertex: THREE.Vector3, index: number) => {
             const distanceSq = vertex.distanceToSquared(pointInWorld);
             if (distanceSq < minDistanceSq) {
                 minDistanceSq = distanceSq;
@@ -174,43 +253,50 @@ export class DijkstraService implements IDijkstraService {
     }
 
     /**
-     * 查找距离给定交点最近的图顶点索引。
+     * 上下文感知的交点最近顶点查找
      */
-    public getClosestGraphVertexNearIntersection(intersection: THREE.Intersection): number | null {
-        if (!this.isReady() || !this.meshGraph) {
-            console.warn("[DijkstraService.getClosestGraphVertexNearIntersection] Graph not ready. Using fallback.");
-            return this.getClosestVertexIndex(intersection.point);
-        }
-        if (!intersection.face) {
-            console.warn("[DijkstraService.getClosestGraphVertexNearIntersection] Intersection has no face data. Using fallback.");
-            return this.getClosestVertexIndex(intersection.point);
+    public getClosestGraphVertexNearIntersection(
+        intersection: THREE.Intersection,
+        partId: string
+    ): number | null {
+        if (!this.isContextReady(partId)) {
+            console.warn(`[DijkstraService] 部位 ${partId} 图数据未准备好，使用回退方法`);
+            return this.getClosestVertexIndex(intersection.point, partId);
         }
 
-        return this.getClosestVertexIndex(intersection.point);
+        if (!intersection.face) {
+            console.warn(`[DijkstraService] 交点无面数据，使用回退方法`);
+            return this.getClosestVertexIndex(intersection.point, partId);
+        }
+
+        return this.getClosestVertexIndex(intersection.point, partId);
     }
 
-
     /**
-     * 使用 Dijkstra 算法查找最短路径。
+     * 上下文感知的最短路径查找
      */
-    public findShortestPath(startVertexIndex: number, endVertexIndex: number): THREE.Vector3[] | null {
-        if (!this.isReady() || !this.meshGraph) { // 确保 isReady() 检查
-            console.warn(`[DijkstraService.findShortestPath] Graph not ready. Start: ${startVertexIndex}, End: ${endVertexIndex}`);
+    public findShortestPath(
+        startVertexIndex: number,
+        endVertexIndex: number,
+        partId: string
+    ): THREE.Vector3[] | null {
+        const meshGraph = this.meshGraphs.get(partId);
+        if (!meshGraph) {
+            console.warn(`[DijkstraService] 部位 ${partId} 图数据未准备好`);
             return null;
         }
 
-        if (startVertexIndex < 0 || startVertexIndex >= this.meshGraph.vertices.length ||
-            endVertexIndex < 0 || endVertexIndex >= this.meshGraph.vertices.length) {
-            console.warn(`[DijkstraService.findShortestPath] Invalid start/end node. Start: ${startVertexIndex}, End: ${endVertexIndex}, Vertices: ${this.meshGraph.vertices.length}`);
+        if (startVertexIndex < 0 || startVertexIndex >= meshGraph.vertices.length ||
+            endVertexIndex < 0 || endVertexIndex >= meshGraph.vertices.length) {
+            console.warn(`[DijkstraService] 无效的起始/结束节点索引`);
             return null;
         }
 
         if (startVertexIndex === endVertexIndex) {
-            console.log("[DijkstraService.findShortestPath] Start and end vertex are the same:", startVertexIndex);
-            return [this.meshGraph.vertices[startVertexIndex].clone()];
+            return [meshGraph.vertices[startVertexIndex].clone()];
         }
 
-        const numVertices = this.meshGraph.vertices.length;
+        const numVertices = meshGraph.vertices.length;
         const distances: number[] = new Array(numVertices).fill(Infinity);
         const predecessors: (number | null)[] = new Array(numVertices).fill(null);
         const pq = new MinPriorityQueue();
@@ -229,10 +315,10 @@ export class DijkstraService implements IDijkstraService {
             }
 
             if (u === endVertexIndex) {
-                break; // Path found
+                break;
             }
 
-            const neighbors = this.meshGraph.adjacency.get(u) || [];
+            const neighbors = meshGraph.adjacency.get(u) || [];
             for (const { neighborIndex: v, weight } of neighbors) {
                 const altDistance = uDistance + weight;
                 if (altDistance < distances[v]) {
@@ -248,31 +334,84 @@ export class DijkstraService implements IDijkstraService {
         }
 
         if (predecessors[endVertexIndex] === null && startVertexIndex !== endVertexIndex) {
-            console.warn(`[DijkstraService.findShortestPath] No path found from ${startVertexIndex} to ${endVertexIndex}. Predecessor for end is null.`);
+            console.warn(`[DijkstraService] 未找到从 ${startVertexIndex} 到 ${endVertexIndex} 的路径`);
             return null;
         }
 
         const path: THREE.Vector3[] = [];
         let currentIdx: number | null = endVertexIndex;
         while (currentIdx !== null) {
-            path.unshift(this.meshGraph.vertices[currentIdx].clone());
+            path.unshift(meshGraph.vertices[currentIdx].clone());
             currentIdx = predecessors[currentIdx];
         }
 
         return path.length > 0 ? path : null;
     }
 
-    /** 获取网格数据，主要用于 SurfaceMeasurementTool */
-    public getGraphData(): MeshGraphData | null {
-        return this.meshGraph;
+    /**
+     * 获取指定上下文的图数据
+     */
+    public getGraphData(partId: string): MeshGraphData | null {
+        return this.meshGraphs.get(partId) || null;
     }
-    public dispose(): void {
-        if (this.graphBuilderWorker) {
-            this.graphBuilderWorker.terminate();
-            this.graphBuilderWorker = null;
+
+    /**
+     * 清理指定上下文的资源
+     */
+    public disposeContext(partId: string): void {
+        // 终止相关的 Worker
+        const worker = this.activeWorkers.get(partId);
+        if (worker) {
+            worker.terminate();
+            this.activeWorkers.delete(partId);
         }
-        this.meshGraph = null;
-        this.isInitializing = false;
-        console.log("[DijkstraService] Disposed.");
+
+        // 移除图数据
+        this.meshGraphs.delete(partId);
+
+        // 移除初始化状态
+        this.initializingContexts.delete(partId);
+
+        console.log(`[DijkstraService] 已清理部位 ${partId} 的资源`);
+    }
+
+    /**
+     * 获取所有已管理的上下文ID
+     */
+    public getAllContexts(): string[] {
+        return Array.from(this.meshGraphs.keys());
+    }
+
+    private findFirstMeshInModel(model: THREE.Object3D): THREE.Mesh | null {
+        let foundMesh: THREE.Mesh | null = null;
+        model.traverse((child: THREE.Object3D) => {
+            if (foundMesh) { // Optimization: stop searching once found
+                return;
+            }
+            if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).geometry) {
+                foundMesh = child as THREE.Mesh;
+            }
+        });
+        return foundMesh;
+    }
+
+    /**
+     * 清理所有资源
+     */
+    public dispose(): void {
+        // 终止所有 Worker
+        this.activeWorkers.forEach((worker, partId) => {
+            worker.terminate();
+            console.log(`[DijkstraService] 终止了部位 ${partId} 的 Worker`);
+        });
+        this.activeWorkers.clear();
+
+        // 清理所有图数据
+        this.meshGraphs.clear();
+
+        // 清理初始化状态
+        this.initializingContexts.clear();
+
+        console.log("[DijkstraService] 已清理所有资源");
     }
 }

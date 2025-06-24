@@ -106,14 +106,16 @@ export class InteractionManager implements IInteractionManager {
             );
             interactionEvent.pointer = pointer;
 
+            //获取当前应该被投射的激活模型
+            const activeModel = this.sceneController.activeModelForRaycasting;
             // Perform Raycasting
-            if (this.sceneController.camera && this.sceneController.targetModel) {
+            if (this.sceneController.camera && activeModel) {
                 this.sceneController.raycaster.setFromCamera(pointer, this.sceneController.camera);
-                const intersects = this.sceneController.raycaster.intersectObject(this.sceneController.targetModel, true);
 
+                const intersects = this.sceneController.raycaster.intersectObject(activeModel, true);
                 if (intersects.length > 0) {
                     interactionEvent.intersection = intersects[0];
-                }
+                } 
             }
         }
         return interactionEvent;

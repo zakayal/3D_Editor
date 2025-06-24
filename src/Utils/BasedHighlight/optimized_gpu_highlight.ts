@@ -752,7 +752,7 @@ export class OptimizedGPUHighlightSystem {
     /**
      * 简化套索路径 - Douglas-Peucker算法的简化版
      */
-    private simplifyLassoPath(path: number[], tolerance: number = 0.01): number[] {
+    private simplifyLassoPath(path: number[], _tolerance: number = 0.01): number[] {
         if (path.length <= this.MAX_LASSO_POINTS * 3) {
             return path;
         }

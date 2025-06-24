@@ -87,8 +87,6 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
     onPointerMove(event: InteractionEvent): void {
         if (this.currentPoints.length !== 1 || !event.intersection) {
             this._clearPreviewLine();
-            // 强制渲染以确保预览线的清除生效
-            this.sceneController.forceRender();
             return;
         }
 
@@ -113,8 +111,6 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
         this.previewLine.computeLineDistances();
         this.sceneController.scene.add(this.previewLine);
         
-        // 强制渲染以确保预览线显示
-        this.sceneController.forceRender();
     }
 
     onKeyDown(event: InteractionEvent): void {

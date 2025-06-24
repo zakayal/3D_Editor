@@ -477,7 +477,7 @@ export class ShaderBasedHighlightSystem {
     /**
      * 使用套索路径更新高亮（兼容性方法 - 转换为三角形数组）
      */
-    updateHighlightWithLassoPath(lassoPath: number[]): void {
+    updateHighlightWithLassoPath(_lassoPath: number[]): void {
         console.warn('ShaderBasedHighlightSystem: 套索路径方法在轻骑兵模式下不支持，跳过处理');
         // 轻骑兵系统不支持套索路径，这里可以实现简单的降级处理
         // 或者直接跳过，等待重装主力处理

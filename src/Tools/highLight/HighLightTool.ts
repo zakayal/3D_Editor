@@ -1,5 +1,3 @@
-// src/Tools/hightLight/HighLightTool.ts
-
 //@ts-ignore
 import * as THREE from 'three';
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
@@ -8,7 +6,6 @@ import { InteractionEvent, ToolMode, ISceneController, IAnnotationManager, IEven
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
 export class HighlightTool extends BaseTool implements ITool {
-    private raycaster = new THREE.Raycaster();
     private readonly hoverHighlightMaterial: THREE.Material;
     private readonly selectHighlightMaterial: THREE.Material;
 
@@ -109,7 +106,7 @@ export class HighlightTool extends BaseTool implements ITool {
     }
 
     onPointerMove(event: InteractionEvent): void {
-        const intersection = this.getIntersection(event);
+        const intersection = event.intersection;
 
         if (intersection && typeof intersection.face?.materialIndex !== 'undefined') {
             const mesh = intersection.object as THREE.Mesh;
@@ -119,13 +116,9 @@ export class HighlightTool extends BaseTool implements ITool {
             if (this.hoveredMaterialInfo?.mesh !== mesh || this.hoveredMaterialInfo?.materialIndex !== materialIndex) {
                 this.clearHoverState();
                 this.setHoverState(mesh, materialIndex, key);
-                // 强制渲染以确保悬停高亮效果显示
-                this.sceneController.forceRender();
             }
         } else {
             this.clearHoverState();
-            // 强制渲染以确保悬停高亮清除生效
-            this.sceneController.forceRender();
         }
     }
 
@@ -133,10 +126,27 @@ export class HighlightTool extends BaseTool implements ITool {
      * 核心交互逻辑：整合了耳廓点选和普通部位多选两种模式
      */
     onPointerDown(event: InteractionEvent): void {
-        const intersection = this.getIntersection(event)
+                // 验证收到的事件是否包含正确的交点信息
+
+        const intersection = event.intersection
 
         if (intersection && typeof intersection.face?.materialIndex !== 'undefined') {
             const mesh = intersection.object as THREE.Mesh
+
+            //核心修改：检查交点是否属于人体模型
+            let isHumanModelPart = false;
+            this.sceneController.humanModel?.traverse((child:THREE.Object3D)=>{
+                if(child === mesh)
+                {
+                    isHumanModelPart = true;
+                }
+            })
+
+            if(!isHumanModelPart)
+            {
+                return;
+            }
+            
             const materialIndex = intersection.face.materialIndex
             const key = `${mesh.uuid}-${materialIndex}`
 
@@ -174,8 +184,6 @@ export class HighlightTool extends BaseTool implements ITool {
                     const position = intersection.point.clone()
                     this.pendingEarHighlights.set(key, { name: partName, position })
                     
-                    // 强制渲染以确保选中高亮效果显示
-                    this.sceneController.forceRender()
                 }
             } else {
                 // --- 工作流2: 点击了普通部位 ---
@@ -265,7 +273,6 @@ export class HighlightTool extends BaseTool implements ITool {
     }
 
     // --- 基础高亮与状态方法 ---
-
     private setHoverState(mesh: THREE.Mesh, materialIndex: number, key: string): void {
         this.hoveredMaterialInfo = { mesh, materialIndex };
         this.updateMaterialDisplay(mesh, materialIndex, key);
@@ -297,9 +304,9 @@ export class HighlightTool extends BaseTool implements ITool {
      * 预初始化所有模型的原始材料，避免首次点击时的延迟
      **/
     private preInitializeMaterials(): void {
-        if(!this.sceneController.targetModel) return;
+        if(!this.sceneController.humanModel) return;
 
-        this.sceneController.targetModel.traverse((child:THREE.Object3D) => {
+        this.sceneController.humanModel.traverse((child:THREE.Object3D) => {
             if((child as THREE.Mesh).isMesh){
                 const mesh = child as THREE.Mesh;
                 this.ensureOriginalMaterialsStored(mesh);
@@ -344,15 +351,6 @@ export class HighlightTool extends BaseTool implements ITool {
                 }
             });
         }
-    }
-
-    private getIntersection(event: InteractionEvent): THREE.Intersection | null {
-        if (!event.pointer || !this.sceneController.camera || !this.sceneController.targetModel) {
-            return null;
-        }
-        this.raycaster.setFromCamera(event.pointer, this.sceneController.camera);
-        const intersects = this.raycaster.intersectObject(this.sceneController.targetModel, true);
-        return intersects.length > 0 ? intersects[0] : null;
     }
     
     //原始材质保存机制

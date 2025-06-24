@@ -19,7 +19,7 @@ type TransferableAdjacency = [ number , Neighbor[]][]
 
 // 根据模型大小自动调整性能配置
 const getPerformanceConfig = (vertexCount: number): PerformanceConfig => {
-    console.log(`[Worker] Adjusting performance config for ${vertexCount} vertices`);
+    // console.log(`[Worker] Adjusting performance config for ${vertexCount} vertices`);
     
     if (vertexCount > 2000000) {
         // 极超大体积模型：最极端的优化设置，跳过大部分计算
@@ -33,7 +33,7 @@ const getPerformanceConfig = (vertexCount: number): PerformanceConfig => {
         };
     } else if (vertexCount > 1000000) {
         // 超大体积模型：最极端的优化设置
-        console.log(`[Worker] Using extreme optimization for very large model (${vertexCount} vertices)`);
+        // console.log(`[Worker] Using extreme optimization for very large model (${vertexCount} vertices)`);
         return {
             subdivisionThreshold: 0.1,      // 极高的阈值，几乎不细分
             subdivisionSteps: 1,            // 最少的细分步数
@@ -82,8 +82,8 @@ const buildMeshGraphWorker = (geometryData: {
     position: Float32Array;
     index?: Uint16Array | Uint32Array;
 }, worldMatrixArray: number[]): BuildMeshGraphWorkerResult => {
-    console.log("[Worker] Starting graph construction.");
-    const startTime = performance.now();
+    // console.log("[Worker] Starting graph construction.");
+    // const startTime = performance.now();
     
     // 进度报告函数
     const reportProgress = (stage: string, current: number, total: number) => {
@@ -112,7 +112,7 @@ const buildMeshGraphWorker = (geometryData: {
     // console.log(`[Worker] Using performance config:`, config);
     
     // 阶段1：构建顶点
-    const vertexBuildStart = performance.now();
+    // const vertexBuildStart = performance.now();
     for (let i = 0; i < positionAttributeCount; i++) {
         if (i % Math.floor(positionAttributeCount / 10) === 0) {
             reportProgress("Building vertices", i, positionAttributeCount);
@@ -126,8 +126,8 @@ const buildMeshGraphWorker = (geometryData: {
         v.applyMatrix4(worldMatrix);
         originalVertices.push(v);
     }
-    const vertexBuildTime = performance.now() - vertexBuildStart;
-    console.log(`[Worker] Vertex building completed in ${vertexBuildTime.toFixed(2)}ms`);
+    // const vertexBuildTime = performance.now() - vertexBuildStart;
+    // console.log(`[Worker] Vertex building completed in ${vertexBuildTime.toFixed(2)}ms`);
     
     reportProgress("Building vertices", positionAttributeCount, positionAttributeCount);
 
@@ -222,8 +222,8 @@ const buildMeshGraphWorker = (geometryData: {
 
     if (indexData) {
         // --- 索引几何体处理逻辑 ---
-        console.log(`[Worker] Processing indexed geometry with ${indexData.length / 3} faces`);
-        const indexedGeometryStart = performance.now();
+        // console.log(`[Worker] Processing indexed geometry with ${indexData.length / 3} faces`);
+        // const indexedGeometryStart = performance.now();
         
         // 1. 遍历所有原始顶点，通过 findOrAddVertex 将它们（或它们的唯一版本）添加到 `vertices` 数组中，
         //    并填充 `vertexMapping`，将原始索引映射到它们在 `vertices` 数组中的图索引。
@@ -234,7 +234,7 @@ const buildMeshGraphWorker = (geometryData: {
 
         // 2. 遍历面 (face)，使用图索引构建边
         const faceCount = indexData.length / 3;
-        console.log(`[Worker] Building edges for ${faceCount} faces`);
+        // console.log(`[Worker] Building edges for ${faceCount} faces`);
         
         for (let i = 0; i < indexData.length; i += 3) {
             if (i % Math.floor(indexData.length / 10) === 0) {
@@ -295,12 +295,12 @@ const buildMeshGraphWorker = (geometryData: {
         }
         
         reportProgress("Building face edges", faceCount, faceCount);
-        const indexedGeometryTime = performance.now() - indexedGeometryStart;
-        console.log(`[Worker] Indexed geometry processing completed in ${indexedGeometryTime.toFixed(2)}ms`);
+        // const indexedGeometryTime = performance.now() - indexedGeometryStart;
+        // console.log(`[Worker] Indexed geometry processing completed in ${indexedGeometryTime.toFixed(2)}ms`);
     } else {
         // --- 非索引几何体处理逻辑 (修改部分) ---
-        console.log(`[Worker] Processing non-indexed geometry`);
-        const nonIndexedStart = performance.now();
+        // console.log(`[Worker] Processing non-indexed geometry`);
+        // const nonIndexedStart = performance.now();
         
         const tempVertexMap = new Map<string, number>(); // 用于合并顶点的临时映射 (key: stringified coords, value: index in mergedOriginalVertices)
         const mergedOriginalVertices: THREE.Vector3[] = []; // 存储合并后的原始顶点
@@ -310,7 +310,7 @@ const buildMeshGraphWorker = (geometryData: {
 
         // 1. 填充 mergedOriginalVertices 和 originalToMergedIndexMap
         // console.log(`[Worker] Merging ${originalVertices.length} vertices`);
-        const mergeStart = performance.now();
+        // const mergeStart = performance.now();
         
         // 对于超大模型，使用优化的合并策略
         if (originalVertices.length > 1000000) {
@@ -406,14 +406,14 @@ const buildMeshGraphWorker = (geometryData: {
         }
         
         reportProgress("Merging vertices", originalVertices.length, originalVertices.length);
-        const mergeTime = performance.now() - mergeStart;
-        console.log(`[Worker] Vertex merging completed in ${mergeTime.toFixed(2)}ms, reduced from ${originalVertices.length} to ${mergedOriginalVertices.length} vertices`);
+        // const mergeTime = performance.now() - mergeStart;
+        // console.log(`[Worker] Vertex merging completed in ${mergeTime.toFixed(2)}ms, reduced from ${originalVertices.length} to ${mergedOriginalVertices.length} vertices`);
 
         // 2. 将 mergedOriginalVertices 中的顶点添加到最终的全局 `vertices` 数组中，
         //    并建立从 mergedOriginalVertices 索引到全局 `vertices` 索引的映射。
         //    同时，更新 vertexMapping 以直接映射 originalVertices 索引到全局 `vertices` 索引。
         // console.log(`[Worker] Building vertex mapping for ${mergedOriginalVertices.length} merged vertices`);
-        const mappingStart = performance.now();
+        // const mappingStart = performance.now();
         
         const mergedToGlobalGraphIndexMap: number[] = new Array(mergedOriginalVertices.length);
         for (let i = 0; i < mergedOriginalVertices.length; i++) {
@@ -434,13 +434,13 @@ const buildMeshGraphWorker = (geometryData: {
         }
         
         reportProgress("Updating vertex mapping", originalVertices.length, originalVertices.length);
-        const mappingTime = performance.now() - mappingStart;
-        console.log(`[Worker] Vertex mapping completed in ${mappingTime.toFixed(2)}ms, final graph has ${vertices.length} vertices`);
+        // const mappingTime = performance.now() - mappingStart;
+        // console.log(`[Worker] Vertex mapping completed in ${mappingTime.toFixed(2)}ms, final graph has ${vertices.length} vertices`);
 
         // 3. 构建边 (现在 vertexMapping 中的索引是相对于全局 `vertices` 数组的，可以直接用于 addEdge)
         const triangleCount = Math.floor(positionAttributeCount / 3);
         // console.log(`[Worker] Building triangle edges for ${triangleCount} triangles`);
-        const triangleEdgeStart = performance.now();
+        // const triangleEdgeStart = performance.now();
         
         // 对于极超大模型，完全跳过三角形边构建以获得最快速度
         if (originalVertices.length > 2000000) {
@@ -503,13 +503,13 @@ const buildMeshGraphWorker = (geometryData: {
         }
         
         reportProgress("Building triangle edges", triangleCount, triangleCount);
-        const triangleEdgeTime = performance.now() - triangleEdgeStart;
-        console.log(`[Worker] Triangle edge building completed in ${triangleEdgeTime.toFixed(2)}ms`);
+        // const triangleEdgeTime = performance.now() - triangleEdgeStart;
+        // console.log(`[Worker] Triangle edge building completed in ${triangleEdgeTime.toFixed(2)}ms`);
 
         // 4. 优化：使用空间分割提升邻近连接算法的性能
         if (config.enableProximityConnections) {
             // console.log("[Worker] Starting proximity-based connections with spatial optimization...");
-            const proximityStart = performance.now();
+            // const proximityStart = performance.now();
             
             const PROXIMITY_THRESHOLD = config.proximityThreshold;
             const MAX_CONNECTIONS_PER_VERTEX = config.maxConnectionsPerVertex;
@@ -580,21 +580,21 @@ const buildMeshGraphWorker = (geometryData: {
             }
             
             reportProgress("Building proximity connections", vertices.length, vertices.length);
-            const proximityTime = performance.now() - proximityStart;
-            console.log(`[Worker] Proximity-based connections completed in ${proximityTime.toFixed(2)}ms`);
+            // const proximityTime = performance.now() - proximityStart;
+            // console.log(`[Worker] Proximity-based connections completed in ${proximityTime.toFixed(2)}ms`);
         } else {
             console.log("[Worker] Proximity-based connections disabled for performance.");
         }
         
-        const nonIndexedTime = performance.now() - nonIndexedStart;
-        console.log(`[Worker] Non-indexed geometry processing completed in ${nonIndexedTime.toFixed(2)}ms`);
+        // const nonIndexedTime = performance.now() - nonIndexedStart;
+        // console.log(`[Worker] Non-indexed geometry processing completed in ${nonIndexedTime.toFixed(2)}ms`);
     }
 
-    console.log("[Worker] Graph construction completed.");
+    // console.log("[Worker] Graph construction completed.");
 
-    const totalTime = performance.now() - startTime;
-    console.log(`[Worker] Graph construction completed in ${totalTime.toFixed(2)}ms`);
-    console.log(`[Worker] Final graph statistics: ${vertices.length} vertices, ${edgeSet.size} edges`);
+    // const totalTime = performance.now() - startTime;
+    // console.log(`[Worker] Graph construction completed in ${totalTime.toFixed(2)}ms`);
+    // console.log(`[Worker] Final graph statistics: ${vertices.length} vertices, ${edgeSet.size} edges`);
 
     const transferableAdjacency: TransferableAdjacency = Array.from(adjacency.entries()).map(([key, value]) => [
         key,
@@ -618,7 +618,7 @@ self.onmessage = (event: MessageEvent) => {
 
             const serializableVertices = result.vertices.map(v => v.toArray());
             const serializableAdjacency = Array.from(result.adjacency.entries());
-            console.log('[Worker] Graph construction completed, starting postMessage');
+            // console.log('[Worker] Graph construction completed, starting postMessage');
 
             self.postMessage({
                 type: 'GRAPH_BUILT',

@@ -5,7 +5,7 @@ import { ITool } from '../../components/Base-tools/BaseTool';
 import { InteractionEvent, ToolMode, ScaleBarAnnotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
 
 export class ScaleBarTool extends BaseTool implements ITool {
-    private previewScaleBar: THREE.Group | null = null;
+    private previewScaleBar: THREE.Object3D | null = null;
     private previewRotationAngle: number = 0;
     private currentPlacementNormal: THREE.Vector3 = new THREE.Vector3(0, 1, 0);
     private currentPlacementTangent: THREE.Vector3 = new THREE.Vector3(1, 0, 0);
@@ -37,10 +37,10 @@ export class ScaleBarTool extends BaseTool implements ITool {
             this.sceneController.scene.remove(this.previewScaleBar);
             this.previewScaleBar = null;
         }
-        this.initPreview();
+        this.previewScaleBar = this.initPreview();
         
         if (this.previewScaleBar) {
-            (this.previewScaleBar as THREE.Group).visible = false;
+            this.previewScaleBar.visible = false;
         }
         this.eventEmitter.emit('modeChanged', { mode: ToolMode.ScaleBar, enabled: true });
     }
@@ -55,20 +55,20 @@ export class ScaleBarTool extends BaseTool implements ITool {
         this.eventEmitter.emit('modeChanged', { mode: ToolMode.ScaleBar, enabled: false });
     }
 
-    private initPreview(): void {
+    private initPreview(): THREE.Object3D | null {
         const baseModel = this.sceneController.scaleBarBaseModel;
         if (!baseModel) {
             console.error("Scale bar base model not loaded!");
             this.eventEmitter.emit('error', { message: "Scale bar base model not loaded!" });
-            return;
+            return null;
         }
         
         // 深度克隆模型以避免对原始模型的影响
-        this.previewScaleBar = baseModel.clone();
-        this.previewScaleBar.visible = false;
+        const previewObject = baseModel.clone();
+        previewObject.visible = false;
         
         // 优化材质处理：使用原始材质的副本而不是可能已被修改的材质
-        this.previewScaleBar.traverse((child: THREE.Object3D) => {
+        previewObject.traverse((child: THREE.Object3D) => {
             const mesh = child as THREE.Mesh;
             if (mesh.isMesh && mesh.material) {
                 // 查找对应的原始子对象
@@ -99,34 +99,53 @@ export class ScaleBarTool extends BaseTool implements ITool {
                 }
             }
         });
-        this.sceneController.scene.add(this.previewScaleBar);
+        this.sceneController.scene.add(previewObject);
+        return previewObject;
     }
     
     // 辅助方法：找到原始模型中对应的子对象
-    private findOriginalChild(baseModel: THREE.Group, targetChild: THREE.Object3D): THREE.Object3D | null {
-        let result: THREE.Object3D | null = null;
-        let targetIndex = 0;
-        let currentIndex = 0;
+    private findOriginalChild(baseModel: THREE.Object3D, targetChild: THREE.Object3D): THREE.Object3D | null {
         
         // 首先找到目标child在其父对象中的索引
-        if (targetChild.parent) {
-            targetIndex = targetChild.parent.children.indexOf(targetChild);
+        if (!targetChild.parent) {
+            return null;
         }
-        
-        // 在原始模型中查找相同路径的对象
-        baseModel.traverse((child: THREE.Object3D) => {
-            if (child.type === targetChild.type && 
-                child.name === targetChild.name && 
-                currentIndex === targetIndex) {
-                result = child;
-                return;
+        const targetPath = [];
+        let currentTarget = targetChild;
+        while(currentTarget && currentTarget !== this.previewScaleBar)
+        {
+            targetPath.unshift({
+                name:currentTarget.name,
+                type:currentTarget.type,
+                index:currentTarget.parent ? currentTarget.parent.children.indexOf(currentTarget) : -1
+            })
+            currentTarget = currentTarget.parent as THREE.Object3D;
+        }
+
+        let currentOriginal:THREE.Object3D | null = baseModel;
+        for(const segment of targetPath)
+        {
+            if(!currentOriginal || segment.index === -1)
+            {
+                currentOriginal = null;
+                break;
             }
-            if (child.type === targetChild.type) {
-                currentIndex++;
+
+            const foundChild:THREE.Object3D | undefined = currentOriginal.children.find(child =>
+                child.name === segment.name &&
+                child.type ===segment.type &&
+                currentOriginal!.children.indexOf(child) === segment.index
+            );
+
+            if(foundChild)
+            {
+                currentOriginal = foundChild;
+            }else{
+                currentOriginal = null;
+                break
             }
-        });
-        
-        return result;
+        }
+        return currentOriginal;
     }
 
     onPointerMove(event: InteractionEvent): void {
@@ -140,15 +159,11 @@ export class ScaleBarTool extends BaseTool implements ITool {
 
             this.updatePreviewPosition(event.intersection);
             
-            // 强制渲染以确保预览效果显示
-            this.sceneController.forceRender();
 
         } else {
             if (this.isPreviewVisible) {
                 this.previewScaleBar.visible = false;
                 this.isPreviewVisible = false;
-                // 强制渲染以确保预览隐藏生效
-                this.sceneController.forceRender();
             }
         }
     }
@@ -164,8 +179,6 @@ export class ScaleBarTool extends BaseTool implements ITool {
         // 更新预览姿态，使用存储的表面点位置而不是当前比例尺位置
         this.updatePreviewTransform(this.currentSurfacePoint);
         
-        // 强制渲染以确保旋转预览效果显示
-        this.sceneController.forceRender();
     }
 
     onPointerDown(event: InteractionEvent): void {
@@ -211,7 +224,8 @@ export class ScaleBarTool extends BaseTool implements ITool {
 
     /** 根据当前法线、切线和旋转角度更新预览对象的位置和姿态 */
     private updatePreviewTransform(surfacePoint: THREE.Vector3): void {
-        if (!this.previewScaleBar || !this.sceneController.targetModel) return;
+        const activeModel = this.sceneController.activeModelForRaycasting;
+        if (!this.previewScaleBar || !activeModel) return;
 
         const finalNormal = this.currentPlacementNormal.clone();
         const baseTangent = this.currentPlacementTangent.clone();

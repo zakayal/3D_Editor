@@ -1,12 +1,13 @@
 //@ts-ignore
 import * as THREE from 'three';
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
-import { InteractionEvent, ToolMode, SurfaceMeasurementAnnotation, ISceneController, IAnnotationManager, IDijkstraService, IEventEmitter } from '../../types/webgl-marking'; // 导入接口
+import { InteractionEvent,IContextProvider,ToolMode, SurfaceMeasurementAnnotation, ISceneController, IAnnotationManager, IDijkstraService, IEventEmitter } from '../../types/webgl-marking'; // 导入接口
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
 export class SurfaceMeasurementTool extends BaseTool implements ITool {
-    private dijkstraService: IDijkstraService; 
+    private dijkstraService: IDijkstraService;
+    private contextProvider: IContextProvider;
 
     // --- 状态 ---
     private currentSurfaceUserPoints: Array<{ point: THREE.Vector3, intersection: THREE.Intersection | null }> = [];
@@ -17,26 +18,45 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
     private previewSurfaceSegmentLine: THREE.Line | null = null;
     private startPointVisualCue: THREE.Mesh | null = null;
     private isSnappingToStartPoint: boolean = false;
-    
+
     // 添加点标记存储
     private pointMarkers: THREE.Mesh[] = []; // 存储所有点的可视化标记
 
     // --- 配置 ---
-    private readonly SNAP_DISTANCE_THRESHOLD: number = 0.01; // 吸附阈值 (根据模型大小调整)
     private readonly CUE_GEOMETRY_RADIUS: number = 0.003; // 吸附提示球大小
     private readonly POINT_MARKER_RADIUS: number = 0.002; // 点标记球大小
     private readonly LINE_COLOR: THREE.Color = new THREE.Color(0x0000ff); // 蓝色（实时测量线）
     private readonly SAVED_LINE_COLOR: THREE.Color = new THREE.Color(0xff0000); // 红色（保存后测量线）
-    private readonly PREVIEW_COLOR: THREE.Color = new THREE.Color(0xffff00); // 黄色
     private readonly CUE_COLOR: THREE.Color = new THREE.Color(0xffff00); // 黄色
     private readonly POINT_MARKER_COLOR: THREE.Color = new THREE.Color(0x00ff00); // 绿色（点标记）
 
-    private lastPreviewUpdateTime: number = 0;//上次预览更新时间戳
-    private readonly PREVIEW_UPDATE_INTERVAL: number = 100; // 预览间隔时间
 
-    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, dijkstraService: IDijkstraService, eventEmitter: IEventEmitter) { 
-        super(sceneController, annotationManager, eventEmitter); 
-        this.dijkstraService = dijkstraService;    
+    constructor(
+        sceneController: ISceneController, 
+        annotationManager: IAnnotationManager, 
+        dijkstraService: IDijkstraService, 
+        eventEmitter: IEventEmitter,
+        contextProvider: IContextProvider
+    ) {
+        super(sceneController, annotationManager, eventEmitter);
+        this.dijkstraService = dijkstraService;
+        this.contextProvider = contextProvider;
+    }
+
+    /**
+     * 获取当前测量上下文的partId，如果没有则使用默认值
+     */
+    private _getCurrentPartId(): string {
+        const currentPartId = this.contextProvider.getCurrentContextPartId();
+        // 如果没有当前上下文，默认使用主模型
+        return currentPartId || 'human_model';
+    }
+
+    /**
+     * 检查指定上下文的图数据是否准备就绪
+     */
+    private _isContextReady(partId: string): boolean {
+        return this.dijkstraService.isContextReady(partId);
     }
 
     getMode(): ToolMode {
@@ -45,13 +65,20 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
 
     activate(): void {
         super.activate();
-        if (!this.dijkstraService.isReady()) {
-            console.warn("[SurfaceTool.activate] Cannot activate SurfaceMeasurementTool, DijkstraService not ready.");
-            this.eventEmitter.emit('notification', { message: "模型数据未就绪，无法开始表面测距。" });
+        
+        const currentPartId = this._getCurrentPartId();
+        
+        if (!this._isContextReady(currentPartId)) {
+            console.warn(`[SurfaceTool.activate] Context ${currentPartId} not ready, DijkstraService not available.`);
+            this.eventEmitter.emit('notification', { 
+                message: `当前上下文 ${currentPartId} 的图数据未就绪，无法开始表面测距。`,
+                type: 'warn'
+            });
             this.eventEmitter.emit('toolModeChangeRequested', { mode: ToolMode.Idle });
             return;
         }
-        console.log("[SurfaceTool.activate] SurfaceMeasurementTool activated.");
+        
+        console.log(`[SurfaceTool.activate] SurfaceMeasurementTool activated for context: "${currentPartId}"`);
         this.sceneController.orbitControls.enabled = true;
         this._resetCurrentPath();
         this._initVisualCues();
@@ -107,8 +134,10 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
             console.log("[SurfaceTool.onPointerDown] No intersection, returning.");
             return;
         }
-        if (!this.dijkstraService.isReady()) {
-            console.warn("[SurfaceTool.onPointerDown] DijkstraService not ready, returning.");
+
+        const currentPartId = this._getCurrentPartId();
+        if (!this._isContextReady(currentPartId)) {
+            console.warn(`[SurfaceTool.onPointerDown] Context ${currentPartId} not ready, returning.`);
             return;
         }
 
@@ -127,26 +156,20 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
     }
 
     onPointerMove(event: InteractionEvent): void {
-        if (this.currentSurfaceUserPoints.length === 0 || !this.dijkstraService.isReady()) {
-            this._hidePreview();
-            return;
+        // 直接隐藏预览，并返回
+        this._hidePreview();
+
+        // (可选) 如果你还想在移动时看到长度变化，可以保留长度计算逻辑
+        if (this.currentSurfaceUserPoints.length > 0 && event.intersection) {
+            const tempLength = this._calculateProvisionalLength(event.intersection.point);
+            this.eventEmitter.emit('measurementUpdated', { length: tempLength, showControls: true, isMeasuring: true });
+        } else if (this.currentSurfaceUserPoints.length > 0) {
+            this.eventEmitter.emit('measurementUpdated', { length: this.currentSurfaceLength, showControls: true, isMeasuring: true });
         }
 
-        if (event.intersection) {
-            this._updatePathPreview(event.intersection);
-            
-            // 在移动时计算并显示预计的总长度
-            if (this.currentSurfaceUserPoints.length > 0) {
-                const tempLength = this._calculateProvisionalLength(event.intersection.point);
-                this.eventEmitter.emit('measurementUpdated', { length: tempLength, showControls: true, isMeasuring: true });
-            }
-        } else {
-            this._hidePreview();
-            
-            // 即使没有intersection，也要保持当前已确认的长度显示
-            if (this.currentSurfaceUserPoints.length > 0) {
-                this.eventEmitter.emit('measurementUpdated', { length: this.currentSurfaceLength, showControls: true, isMeasuring: true });
-            }
+        // 确保在每次移动时都隐藏预览线
+        if (this.previewSurfaceSegmentLine) {
+            this.previewSurfaceSegmentLine.visible = false;
         }
     }
 
@@ -207,71 +230,72 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
         this.eventEmitter.emit('toolModeChangeRequested', { mode: ToolMode.Idle });
     }
 
-private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Intersection | null): void {
-    const clonedPoint = point.clone(); // 克隆点以避免外部修改
-    this.currentSurfaceUserPoints.push({ point: clonedPoint, intersection });
+    private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Intersection | null): void {
+        const clonedPoint = point.clone(); // 克隆点以避免外部修改
+        this.currentSurfaceUserPoints.push({ point: clonedPoint, intersection });
 
-    if (this.currentSurfaceUserPoints.length === 1) {
-        // 如果这是第一个点，直接添加到显示路径
-        this.currentSurfaceDisplayPath.push(clonedPoint);
-    } else if (this.dijkstraService.isReady()) {
-        // 如果是后续的点，并且 Dijkstra 服务已就绪
-        const previousPointData = this.currentSurfaceUserPoints[this.currentSurfaceUserPoints.length - 2]; // 获取上一个用户点击的点的信息
-        const previousPoint = previousPointData.point;
-        const newPoint = clonedPoint; // 当前点击的点
-
-        // 获取上一个点在图中的顶点索引
-        // 优先使用 intersection 数据获取更精确的附着面顶点
-        const startVertexIndex = previousPointData.intersection
-            ? this.dijkstraService.getClosestGraphVertexNearIntersection(previousPointData.intersection)
-            : this.dijkstraService.getClosestVertexIndex(previousPoint);
-
-        // 获取当前点在图中的顶点索引
-        const endVertexIndex = intersection
-            ? this.dijkstraService.getClosestGraphVertexNearIntersection(intersection)
-            : this.dijkstraService.getClosestVertexIndex(newPoint);
-
-        if (startVertexIndex !== null && endVertexIndex !== null) {
-            // 如果两个点的顶点索引都找到了
-            const pathSegment = this.dijkstraService.findShortestPath(startVertexIndex, endVertexIndex);
-
-            if (pathSegment && pathSegment.length > 0) {
-                // 如果找到了路径
-                // 检查新路径段的第一个点是否与 currentSurfaceDisplayPath 的最后一个点相同
-                // 如果相同，则从 pathSegment 的第二个点开始添加，以避免重复点
-                if (this.currentSurfaceDisplayPath.length > 0 &&
-                    pathSegment[0].equals(this.currentSurfaceDisplayPath[this.currentSurfaceDisplayPath.length - 1])) {
-                    this.currentSurfaceDisplayPath.push(...pathSegment.slice(1));
-                } else {
-                    this.currentSurfaceDisplayPath.push(...pathSegment);
-                }
-                console.log(`[SurfaceTool._addPointToSurfacePath] Dijkstra path segment added. Length: ${pathSegment.length}`);
-            } else {
-                // 未找到 Dijkstra 路径（可能点在不同连通组件，或算法限制）
-                // 回退策略：直接添加当前点击的点，形成直线段
-                console.warn("[SurfaceTool._addPointToSurfacePath] Dijkstra path not found. Falling back to straight line segment.");
-                this.currentSurfaceDisplayPath.push(newPoint);
-            }
+        if (this.currentSurfaceUserPoints.length === 1) {
+            // 如果这是第一个点，直接添加到显示路径
+            this.currentSurfaceDisplayPath.push(clonedPoint);
         } else {
-            //未能为起点或终点找到有效的图顶点索引
-            console.warn("[SurfaceTool._addPointToSurfacePath] Could not find vertex indices for Dijkstra path. Falling back to straight line segment.");
-            this.currentSurfaceDisplayPath.push(newPoint);
+            // 获取当前上下文
+            const currentPartId = this._getCurrentPartId();
+            
+            if (this._isContextReady(currentPartId)) {
+                // 如果是后续的点，并且 Dijkstra 服务已就绪
+                const previousPointData = this.currentSurfaceUserPoints[this.currentSurfaceUserPoints.length - 2]; // 获取上一个用户点击的点的信息
+                const previousPoint = previousPointData.point;
+                const newPoint = clonedPoint; // 当前点击的点
+
+                // 获取上一个点在图中的顶点索引 - 传入 partId
+                const startVertexIndex = previousPointData.intersection
+                    ? this.dijkstraService.getClosestGraphVertexNearIntersection(previousPointData.intersection, currentPartId)
+                    : this.dijkstraService.getClosestVertexIndex(previousPoint, currentPartId);
+
+                // 获取当前点在图中的顶点索引 - 传入 partId
+                const endVertexIndex = intersection
+                    ? this.dijkstraService.getClosestGraphVertexNearIntersection(intersection, currentPartId)
+                    : this.dijkstraService.getClosestVertexIndex(newPoint, currentPartId);
+
+                if (startVertexIndex !== null && endVertexIndex !== null) {
+                    // 如果两个点的顶点索引都找到了 - 传入 partId
+                    const pathSegment = this.dijkstraService.findShortestPath(startVertexIndex, endVertexIndex, currentPartId);
+
+                    if (pathSegment && pathSegment.length > 0) {
+                        // 如果找到了路径
+                        // 检查新路径段的第一个点是否与 currentSurfaceDisplayPath 的最后一个点相同
+                        // 如果相同，则从 pathSegment 的第二个点开始添加，以避免重复点
+                        if (this.currentSurfaceDisplayPath.length > 0 &&
+                            pathSegment[0].equals(this.currentSurfaceDisplayPath[this.currentSurfaceDisplayPath.length - 1])) {
+                            this.currentSurfaceDisplayPath.push(...pathSegment.slice(1));
+                        } else {
+                            this.currentSurfaceDisplayPath.push(...pathSegment);
+                        }
+                        console.log(`[SurfaceTool._addPointToSurfacePath] Dijkstra path segment added for context "${currentPartId}". Length: ${pathSegment.length}`);
+                    } else {
+                        // 未找到 Dijkstra 路径（可能点在不同连通组件，或算法限制）
+                        // 回退策略：直接添加当前点击的点，形成直线段
+                        console.warn(`[SurfaceTool._addPointToSurfacePath] Dijkstra path not found for context "${currentPartId}". Falling back to straight line segment.`);
+                        this.currentSurfaceDisplayPath.push(newPoint);
+                    }
+                } else {
+                    //未能为起点或终点找到有效的图顶点索引
+                    console.warn(`[SurfaceTool._addPointToSurfacePath] Could not find vertex indices for Dijkstra path in context "${currentPartId}". Falling back to straight line segment.`);
+                    this.currentSurfaceDisplayPath.push(newPoint);
+                }
+            } else {
+                // 如果上下文图数据未准备好，使用回退策略
+                console.warn(`[SurfaceTool._addPointToSurfacePath] Context "${currentPartId}" not ready. Falling back to straight line segment.`);
+                this.currentSurfaceDisplayPath.push(clonedPoint);
+            }
         }
-    } else {
-        // Dijkstra 服务未就绪，或者不是第一个点但服务不可用
-        // 回退策略：直接添加当前点击的点
-        this.currentSurfaceDisplayPath.push(clonedPoint);
+
+        // 为新点添加可视化标记 (基于用户实际点击的点)
+        this._addPointMarker(clonedPoint);
+
+        // 更新视觉效果（基于 currentSurfaceDisplayPath）
+        this._updateCurrentVisuals();
     }
-
-    console.log(`[SurfaceTool._addPointToSurfacePath] User clicked point ${this.currentSurfaceUserPoints.length}:`, clonedPoint.toArray());
-    console.log(`[SurfaceTool._addPointToSurfacePath] Display path now has ${this.currentSurfaceDisplayPath.length} points`);
-
-    // 为新点添加可视化标记 (基于用户实际点击的点)
-    this._addPointMarker(clonedPoint);
-
-    // 更新视觉效果（基于 currentSurfaceDisplayPath）
-    this._updateCurrentVisuals();
-}
 
     private _addPointMarker(point: THREE.Vector3): void {
         const markerGeometry = new THREE.SphereGeometry(this.POINT_MARKER_RADIUS, 8, 8);
@@ -302,7 +326,7 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
 
     private _updateCurrentVisuals(): void {
         console.log("[SurfaceTool._updateCurrentVisuals] Called. User points:", this.currentSurfaceUserPoints.length, "Display path:", this.currentSurfaceDisplayPath.length);
-        
+
         // 清除旧的视觉连线
         if (this.currentSurfaceVisualCurve) {
             this.sceneController.scene.remove(this.currentSurfaceVisualCurve);
@@ -345,76 +369,6 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
         this.eventEmitter.emit('measurementUpdated', { length: this.currentSurfaceLength, showControls: true, isMeasuring: true });
     }
 
-    private _updatePathPreview(intersection: THREE.Intersection): void {
-        const now = Date.now();
-        if (now - this.lastPreviewUpdateTime < this.PREVIEW_UPDATE_INTERVAL) {
-            return;
-        }
-        this.lastPreviewUpdateTime = now;
-
-        // 如果没有任何点击点，不显示预览
-        if (this.currentSurfaceUserPoints.length === 0) {
-            this._hidePreview();
-            return;
-        }
-
-        // 初始化预览线段
-        if (!this.previewSurfaceSegmentLine) {
-            const geometry = new THREE.BufferGeometry();
-            const material = new THREE.LineDashedMaterial({
-                color: this.PREVIEW_COLOR,
-                depthTest: false,
-                depthWrite: false,
-                transparent: true,
-                opacity: 0.8,
-                dashSize: 0.02, // 虚线效果
-                gapSize: 0.01,
-                scale: 1
-            });
-            this.previewSurfaceSegmentLine = new THREE.Line(geometry, material);
-            this.previewSurfaceSegmentLine.renderOrder = 998;
-            this.sceneController.scene.add(this.previewSurfaceSegmentLine);
-            console.log("[SurfaceTool._updatePathPreview] Initialized previewSurfaceSegmentLine and added to scene.");
-        }
-
-        // 获取最后一个点击点
-        const lastClickedPoint = this.currentSurfaceUserPoints[this.currentSurfaceUserPoints.length - 1].point;
-        if (!lastClickedPoint) {
-            console.error("[SurfaceTool._updatePathPreview] lastClickedPoint is undefined, cannot draw preview.");
-            this._hidePreview();
-            return;
-        }
-
-        // 检查是否需要吸附到起始点（用于闭合路径）
-        let previewEndPoint = intersection.point.clone();
-        this.isSnappingToStartPoint = false;
-
-        const firstPointData = this.currentSurfaceUserPoints[0];
-        if (this.currentSurfaceUserPoints.length >= 2 && this.startPointVisualCue && firstPointData?.point) {
-            const distanceToStart = intersection.point.distanceTo(firstPointData.point);
-            if (distanceToStart < this.SNAP_DISTANCE_THRESHOLD) {
-                previewEndPoint = firstPointData.point.clone();
-                this.isSnappingToStartPoint = true;
-                this.startPointVisualCue.position.copy(firstPointData.point);
-                this.startPointVisualCue.visible = true;
-            } else {
-                this.startPointVisualCue.visible = false;
-            }
-        }
-
-        // 创建简单的预览线段：从最后一个点击点到鼠标位置
-        try {
-            const previewPoints = [lastClickedPoint.clone(), previewEndPoint];
-            this.previewSurfaceSegmentLine.geometry.setFromPoints(previewPoints);
-            this.previewSurfaceSegmentLine.computeLineDistances(); // 计算虚线距离
-            this.previewSurfaceSegmentLine.visible = true;
-            console.log("[SurfaceTool._updatePathPreview] Preview line updated from last clicked point to mouse position.");
-        } catch (e) {
-            console.error("[SurfaceTool._updatePathPreview] Error creating preview line:", e);
-            this._hidePreview();
-        }
-    }
-
     private _hidePreview(): void {
         if (this.previewSurfaceSegmentLine) this.previewSurfaceSegmentLine.visible = false;
         if (this.startPointVisualCue) this.startPointVisualCue.visible = false;
@@ -452,7 +406,7 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
             this.currentSurfaceVisualCurve = null;
         }
 
-        if (this.previewSurfaceSegmentLine && fullClear) { 
+        if (this.previewSurfaceSegmentLine && fullClear) {
             this.sceneController.scene.remove(this.previewSurfaceSegmentLine);
             this.previewSurfaceSegmentLine.geometry.dispose();
             (this.previewSurfaceSegmentLine.material as THREE.Material).dispose();
@@ -460,7 +414,7 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
         }
 
         if (fullClear) {
-            this._resetCurrentPath(); 
+            this._resetCurrentPath();
         }
     }
 
@@ -472,7 +426,7 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
         const labelObject = new CSS2DObject(labelDiv);
         labelObject.layers.set(0);
 
-        let leaderLine: THREE.Line = new THREE.Line(); 
+        let leaderLine: THREE.Line = new THREE.Line();
 
         if (pathPoints.length > 1) {
             const pathRefPoint = pathPoints[0].clone();
@@ -481,9 +435,10 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
             const meshWorldMatrix = this.sceneController.getTargetMeshWorldMatrix();
 
             if (meshGeometry && meshWorldMatrix) {
-                const graphData = this.dijkstraService.getGraphData();
+                const currentPartId = this._getCurrentPartId();
+                const graphData = this.dijkstraService.getGraphData(currentPartId);
                 if (graphData) {
-                    const closestVertexIndex = this.dijkstraService.getClosestVertexIndex(pathRefPoint);
+                    const closestVertexIndex = this.dijkstraService.getClosestVertexIndex(pathRefPoint, currentPartId);
                     if (closestVertexIndex !== null && meshGeometry.attributes.normal) {
                         const normalAttribute = meshGeometry.attributes.normal as THREE.BufferAttribute;
                         const tempNormal = new THREE.Vector3().fromBufferAttribute(normalAttribute, closestVertexIndex);
@@ -493,8 +448,8 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
                     }
                 }
             }
-            
-            const labelOffsetDistance = 0.01; 
+
+            const labelOffsetDistance = 0.01;
             let labelPosition = pathRefPoint.clone().add(surfaceNormal.clone().multiplyScalar(labelOffsetDistance));
 
             if (pathPoints.length === 2) {
@@ -515,8 +470,8 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
                 color: this.SAVED_LINE_COLOR,
                 // linewidth: 1,
                 transparent: true,
-                opacity: 0.7, 
-                depthTest: true, 
+                opacity: 0.7,
+                depthTest: true,
                 depthWrite: true,
             });
             leaderLine = new THREE.Line(leaderLineGeometry, leaderLineMaterial);
@@ -530,7 +485,7 @@ private _addPointToSurfacePath(point: THREE.Vector3, intersection: THREE.Interse
 
     dispose(): void {
         super.dispose();
-        this._clearCurrentVisuals(true); 
+        this._clearCurrentVisuals(true);
         this._removeVisualCues();
         console.log("[SurfaceTool.dispose] SurfaceMeasurementTool disposed.");
     }

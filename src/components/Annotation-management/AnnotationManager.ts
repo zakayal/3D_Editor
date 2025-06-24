@@ -38,6 +38,8 @@ export class AnnotationManager implements IAnnotationManager {
         });
     }
 
+    // #region --- 公共方法：添加标注 ---
+
     /**
      * 添加一个新的比例尺标注。
      * @param data - 比例尺标注所需数据。
@@ -252,6 +254,9 @@ export class AnnotationManager implements IAnnotationManager {
         console.log("Highlight annotation added:", id);
         return annotation;
     }
+    // #endregion
+
+    // #region --- 公共方法：移除标注 ---
     /**
      * 根据 ID 移除一个标注物。
      * @param id - 要移除的标注物的 ID。
@@ -288,8 +293,9 @@ export class AnnotationManager implements IAnnotationManager {
                     });
                     // 确保每个子对象都被正确清理
                     if ((child as THREE.Mesh).isMesh) {
-                        (child as THREE.Mesh).geometry?.dispose();
-                        this._cleanMaterial((child as THREE.Mesh).material);
+                        const mesh = child as THREE.Mesh;
+                        mesh.geometry?.dispose();
+                        this._cleanMaterial(mesh.material);
                     }
                 });
                 // 从场景中移除整个比例尺对象
@@ -335,6 +341,69 @@ export class AnnotationManager implements IAnnotationManager {
         return true;
     }
 
+    /**
+     * 移除所有标注物。
+     */
+    public removeAllAnnotations(): void {
+        console.log("Removing all annotations...");
+        const ids = Array.from(this.annotations.keys());
+        ids.forEach(id => this.removeAnnotation(id));
+        this.annotations.clear();
+        console.log("All annotations removed.");
+    }
+    // #endregion
+
+    // #region --- 公共方法：查询与查找 ---
+
+    /**
+     * 根据 ID 获取一个标注物。
+     * @param id - 标注物的 ID。
+     * @returns 返回标注物对象，如果找不到则返回 undefined。
+     */
+    public getAnnotation(id: string): Annotation | undefined {
+        return this.annotations.get(id);
+    }
+
+    /**
+     * 获取所有标注物的信息。
+     * @returns 返回一个包含所有标注物信息的数组。
+     */
+    public getAllAnnotations(): Annotation[] {
+        return Array.from(this.annotations.values());
+    }
+
+    /**
+     * 根据 3D 对象查找其所属的标注物 ID。
+     * @param object3D - 场景中的 3D 对象。
+     * @returns 返回该对象所属标注物的 ID，如果找不到则返回 null。
+     */
+    public findAnnotationIdByObject(object3D: THREE.Object3D): string | null {
+        let current: THREE.Object3D | null = object3D;
+        while (current) {
+            if (current.userData && current.userData.annotationId) {
+                return current.userData.annotationId;
+            }
+            current = current.parent;
+        }
+        return null;
+    }
+    // #endregion
+
+    // #region--- 公共方法：生命周期 ---
+    /**
+     * 释放所有标注物及其资源。
+     */
+    public dispose(): void {
+        // 直接调用 removeAllAnnotations 会处理场景中移除和 Map 清理
+        this.removeAllAnnotations();
+
+        this.proxyGeometry.dispose();
+        this.proxyMaterial.dispose();
+        console.log("AnnotationManager disposed.");
+    }
+    // #endregion
+
+    // #region--- 私有辅助方法 ---
     /**
      * 从场景中移除一个对象并释放其资源。
      * @param object - 要移除的对象 (可以是 3D 对象或 CSS2DObject)。
@@ -399,61 +468,5 @@ export class AnnotationManager implements IAnnotationManager {
             && 'isTexture' in value
             && (value as THREE.Texture).isTexture;
     }
-
-    /**
-     * 根据 ID 获取一个标注物。
-     * @param id - 标注物的 ID。
-     * @returns 返回标注物对象，如果找不到则返回 undefined。
-     */
-    public getAnnotation(id: string): Annotation | undefined {
-        return this.annotations.get(id);
-    }
-
-    /**
-     * 获取所有标注物的信息。
-     * @returns 返回一个包含所有标注物信息的数组。
-     */
-    public getAllAnnotations(): Annotation[] {
-        return Array.from(this.annotations.values());
-    }
-
-    /**
-     * 根据 3D 对象查找其所属的标注物 ID。
-     * @param object3D - 场景中的 3D 对象。
-     * @returns 返回该对象所属标注物的 ID，如果找不到则返回 null。
-     */
-    public findAnnotationIdByObject(object3D: THREE.Object3D): string | null {
-        let current: THREE.Object3D | null = object3D;
-        while (current) {
-            if (current.userData && current.userData.annotationId) {
-                return current.userData.annotationId;
-            }
-            current = current.parent;
-        }
-        return null;
-    }
-
-    /**
-     * 移除所有标注物。
-     */
-    public removeAllAnnotations(): void {
-        console.log("Removing all annotations...");
-        const ids = Array.from(this.annotations.keys());
-        ids.forEach(id => this.removeAnnotation(id));
-        this.annotations.clear();
-        console.log("All annotations removed.");
-    }
-
-
-    /**
-     * 释放所有标注物及其资源。
-     */
-    public dispose(): void {
-        // 直接调用 removeAllAnnotations 会处理场景中移除和 Map 清理
-        this.removeAllAnnotations();
-
-        this.proxyGeometry.dispose();
-        this.proxyMaterial.dispose();
-        console.log("AnnotationManager disposed.");
-    }
+    // #endregion
 }

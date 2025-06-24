@@ -200,19 +200,29 @@ export interface ISceneController {
     camera: THREE.PerspectiveCamera;
     orbitControls: any; //类型设置为any，避免在接口文件中直接导入具体的控制器实现
     raycaster: THREE.Raycaster;
-    targetModel: THREE.Group | null;
     scaleBarBaseModel: THREE.Group | null;
 
+    //接口更新
+    humanModel:THREE.Group | null;
+    damageModels:Map<string,THREE.Group>;
+    activeModelForRaycasting:THREE.Object3D | null;
+
+    //签名方法
     loadAssets(onLoad: () => void, onError: (error: any) => void): Promise<void>;
-    removeTargetModel(): void;
     loadNewTargetModel(modelUrl: string, mtlUrl?: string): Promise<THREE.Group>;
-    loadNewGLBTargetModel(modelUrl: string): Promise<THREE.Group>; // <<< 新增这一行：用于加载 GLB/glTF
+    loadModelFromFile(modelUrl:string,mtlUrl?:string):Promise<THREE.Group>;
+
+    //核心管理方法
+    addDamageModel(partId:string,model:THREE.Group):void;
+    removeDamageModel(partId:string):void;
+    showHumanModel():void;
+    showDamageModel(partId:string):void;
+
     startRendering(): void;
     dispose(): void;
     updateRenderSize(width: number, height: number): void;
     getTargetMeshGeometry(): THREE.BufferGeometry | null; // 新增：获取主模型几何体
     getTargetMeshWorldMatrix(): THREE.Matrix4 | null; // 新增：获取主模型世界矩阵
-    forceRender(): void; // 新增：强制渲染方法，供工具调用
     
     // 性能优化相关方法
     setPerformanceMode(mode: 'high' | 'medium' | 'low'): void; // 手动设置性能模式
@@ -228,8 +238,6 @@ export interface ISceneController {
     
     // BVH和LOD控制方法
     setBVHEnabled(enabled: boolean): void; // 启用/禁用BVH加速
-    setLODEnabled(enabled: boolean): void; // 启用/禁用LOD系统
-    setLODDistanceThreshold(distance: number): void; // 设置LOD距离阈值
 }
 
 export interface IAnnotationManager {
@@ -247,12 +255,27 @@ export interface IAnnotationManager {
 }
 
 export interface IDijkstraService {
-    initialize(sceneController: ISceneController): boolean; // 传入接口
+    // 为特定部位ID初始化图数据
+    initializeForContext(partId: string, model: THREE.Group): boolean;
+    
+    // 检查特定上下文是否准备就绪
+    isContextReady(partId: string): boolean;
+    
+    // 检查是否有任何图数据可用
     isReady(): boolean;
-    getClosestVertexIndex(pointInWorld: THREE.Vector3): number | null;
-    getClosestGraphVertexNearIntersection(intersection: THREE.Intersection): number | null;
-    findShortestPath(startVertexIndex: number, endVertexIndex: number): THREE.Vector3[] | null;
-    getGraphData(): MeshGraphData | null;
+    
+    // 上下文感知的方法，需要传入partId参数
+    getClosestVertexIndex(pointInWorld: THREE.Vector3, partId: string): number | null;
+    getClosestGraphVertexNearIntersection(intersection: THREE.Intersection, partId: string): number | null;
+    findShortestPath(startVertexIndex: number, endVertexIndex: number, partId: string): THREE.Vector3[] | null;
+    getGraphData(partId: string): MeshGraphData | null;
+    
+    // 上下文管理方法
+    disposeContext(partId: string): void;
+    getAllContexts(): string[];
+    
+    // 清理所有资源
+    dispose(): void;
 }
 
 export interface IInteractionManager {
@@ -268,6 +291,10 @@ export interface IEventEmitter {
     on<T extends keyof ApiListeners>(eventName: T, callback: EventCallback<ApiListeners[T]>): () => void;
     off<T extends keyof ApiListeners>(eventName: T, callback: EventCallback<ApiListeners[T]>): void;
     emit<T extends keyof ApiListeners>(eventName: T, data: ApiListeners[T]): void;
+}
+
+export interface IContextProvider {
+    getCurrentContextPartId(): string | null;
 }
 
 export interface IPlanimetering {

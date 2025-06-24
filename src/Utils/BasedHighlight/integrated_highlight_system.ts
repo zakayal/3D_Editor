@@ -674,7 +674,6 @@ export class EnhancedIntelligentHighlightSystem {
             this.batchProcessor.completedBatches.size / this.batchProcessor.totalBatches : 0;
         
         // 估算剩余时间
-        const elapsedTime = performance.now() - this.batchProcessor.startTime;
         const avgBatchTime = this.performanceAnalyzer.batchTimes.length > 0 ? 
             this.performanceAnalyzer.batchTimes.reduce((a, b) => a + b, 0) / this.performanceAnalyzer.batchTimes.length : 0;
         const remainingBatches = this.batchProcessor.totalBatches - this.batchProcessor.completedBatches.size;
