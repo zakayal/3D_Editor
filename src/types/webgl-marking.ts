@@ -1,12 +1,12 @@
 //@ts-ignore
-import * as THREE from '@ys/three';
+import * as THREE from 'three';
 //@ts-ignore
-import { CSS2DObject, CSS2DRenderer } from '@ys/three/examples/jsm/renderers/CSS2DRenderer.js';
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-import { ITool } from '../components/Base-tools/BaseTool'; 
+import { ITool } from '../utils/BaseTool'; 
 
 //@ts-ignore
-declare module '@ys/three/examples/jsm/renderers/CSS2DRenderer.js' {
+declare module 'three/examples/jsm/renderers/CSS2DRenderer.js' {
     interface CSS2DObject {
         userData: any;
     }
@@ -230,7 +230,7 @@ export interface ISceneController {
     camera: THREE.PerspectiveCamera;
     orbitControls: any; //类型设置为any，避免在接口文件中直接导入具体的控制器实现
     raycaster: THREE.Raycaster;
-    scaleBarBaseModel: THREE.Scene | null;
+    scaleBarBaseModel: THREE.Group | null;
 
     //接口更新
     humanModel:THREE.Group | null;
