@@ -1,3 +1,11 @@
+/*
+ * @Author: Kaze 3243442830@qq.com
+ * @Date: 2025-06-23 00:26:18
+ * @LastEditors: Kaze 3243442830@qq.com
+ * @LastEditTime: 2025-07-08 21:19:54
+ * @FilePath: \3D_Editor\src\UI\DeleteButton.tsx
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 // src/components/controls/DeleteButton.tsx
 import React, { useEffect, useRef } from 'react';
 //@ts-ignore

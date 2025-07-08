@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { BaseTool } from '../../components/Base-tools/BaseTool';
 import { ITool } from '../../components/Base-tools/BaseTool';
-import { InteractionEvent, ToolMode, ScaleBarAnnotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
+import { InteractionEvent, ToolMode, ScaleBarAnnotation, ISceneController, IAnnotationManager, IEventEmitter,IContextProvider } from '../../types/webgl-marking'; 
 
 export class ScaleBarTool extends BaseTool implements ITool {
     private previewScaleBar: THREE.Object3D | null = null;
@@ -12,8 +12,11 @@ export class ScaleBarTool extends BaseTool implements ITool {
     private isPreviewVisible: boolean = false;
     private currentSurfacePoint: THREE.Vector3 = new THREE.Vector3(); // 新增：存储当前表面点位置
 
-    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) { 
+    private contextProvider:IContextProvider;
+
+    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter,contextProvider:IContextProvider) { 
         super(sceneController, annotationManager, eventEmitter); 
+        this.contextProvider = contextProvider
     }
 
     getMode(): ToolMode {
@@ -37,7 +40,7 @@ export class ScaleBarTool extends BaseTool implements ITool {
             this.sceneController.scene.remove(this.previewScaleBar);
             this.previewScaleBar = null;
         }
-        this.previewScaleBar = this.initPreview();
+        this.previewScaleBar =  this.initPreview();
         
         if (this.previewScaleBar) {
             this.previewScaleBar.visible = false;
@@ -64,7 +67,7 @@ export class ScaleBarTool extends BaseTool implements ITool {
         }
         
         // 深度克隆模型以避免对原始模型的影响
-        const previewObject = baseModel.clone();
+        const previewObject = baseModel.clone()
         previewObject.visible = false;
         
         // 优化材质处理：使用原始材质的副本而不是可能已被修改的材质
@@ -100,52 +103,34 @@ export class ScaleBarTool extends BaseTool implements ITool {
             }
         });
         this.sceneController.scene.add(previewObject);
-        return previewObject;
+        return previewObject
     }
     
     // 辅助方法：找到原始模型中对应的子对象
-    private findOriginalChild(baseModel: THREE.Object3D, targetChild: THREE.Object3D): THREE.Object3D | null {
+    private findOriginalChild(baseModel: THREE.Scene, targetChild: THREE.Object3D): THREE.Object3D | null {
+        let result: THREE.Object3D | null = null;
+        let targetIndex = 0;
+        let currentIndex = 0;
         
         // 首先找到目标child在其父对象中的索引
-        if (!targetChild.parent) {
-            return null;
+        if (targetChild.parent) {
+            targetIndex = targetChild.parent.children.indexOf(targetChild);
         }
-        const targetPath = [];
-        let currentTarget = targetChild;
-        while(currentTarget && currentTarget !== this.previewScaleBar)
-        {
-            targetPath.unshift({
-                name:currentTarget.name,
-                type:currentTarget.type,
-                index:currentTarget.parent ? currentTarget.parent.children.indexOf(currentTarget) : -1
-            })
-            currentTarget = currentTarget.parent as THREE.Object3D;
-        }
-
-        let currentOriginal:THREE.Object3D | null = baseModel;
-        for(const segment of targetPath)
-        {
-            if(!currentOriginal || segment.index === -1)
-            {
-                currentOriginal = null;
-                break;
+        
+        // 在原始模型中查找相同路径的对象
+        baseModel.traverse((child: THREE.Object3D) => {
+            if (child.type === targetChild.type && 
+                child.name === targetChild.name && 
+                currentIndex === targetIndex) {
+                result = child;
+                return;
             }
-
-            const foundChild:THREE.Object3D | undefined = currentOriginal.children.find(child =>
-                child.name === segment.name &&
-                child.type ===segment.type &&
-                currentOriginal!.children.indexOf(child) === segment.index
-            );
-
-            if(foundChild)
-            {
-                currentOriginal = foundChild;
-            }else{
-                currentOriginal = null;
-                break
+            if (child.type === targetChild.type) {
+                currentIndex++;
             }
-        }
-        return currentOriginal;
+        });
+        
+        return result;
     }
 
     onPointerMove(event: InteractionEvent): void {
@@ -199,14 +184,15 @@ export class ScaleBarTool extends BaseTool implements ITool {
             newScaleBarObject.position.copy(this.previewScaleBar.position);
             newScaleBarObject.quaternion.copy(this.previewScaleBar.quaternion);
 
-            const data: Omit<ScaleBarAnnotation, 'id' | 'type'> = {
+            const contextId = this.contextProvider.getCurrentContextPartId() || 'human_model'
+            const data: Omit<ScaleBarAnnotation, 'id' | 'type' | 'contextId'> = {
                 object3D: newScaleBarObject,
                 normal: this.currentPlacementNormal.clone(),
                 tangent: this.currentPlacementTangent.clone(), // 保存最终的切线
                 accumulatedRotation: this.previewRotationAngle,
             };
 
-            const addedAnnotation = this.annotationManager.addScaleBar(data);
+            const addedAnnotation = this.annotationManager.addScaleBar(data,contextId);
             this.eventEmitter.emit('annotationAdded', addedAnnotation);
 
             // 放置后自动切换回 IdleTool，通过事件请求切换

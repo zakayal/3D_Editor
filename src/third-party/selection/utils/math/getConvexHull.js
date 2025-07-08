@@ -1,4 +1,5 @@
 // @ts-nocheck
+
 /**
  * Compute a convex hull of the given points.
  *

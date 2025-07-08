@@ -196,10 +196,11 @@ export class DijkstraService implements IDijkstraService {
         index?: Uint16Array | Uint32Array;
         worldMatrixArray: number[];
     } | null {
+
         const targetMesh = this.findFirstMeshInModel(model)
 
-        if(!targetMesh)
-        {
+        if (!targetMesh) {
+            console.error('[DijkstraService] 在模型中未找到有效的网格');
             return null;
         }
 

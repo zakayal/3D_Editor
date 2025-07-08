@@ -1,7 +1,7 @@
 //@ts-ignore
 import * as THREE from 'three';
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
-import { InteractionEvent,IContextProvider,ToolMode, SurfaceMeasurementAnnotation, ISceneController, IAnnotationManager, IDijkstraService, IEventEmitter } from '../../types/webgl-marking'; // 导入接口
+import { InteractionEvent, ToolMode, SurfaceMeasurementAnnotation, ISceneController, IAnnotationManager, IDijkstraService, IEventEmitter, IContextProvider } from '../../types/webgl-marking'; // 导入接口
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
@@ -29,7 +29,6 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
     private readonly SAVED_LINE_COLOR: THREE.Color = new THREE.Color(0xff0000); // 红色（保存后测量线）
     private readonly CUE_COLOR: THREE.Color = new THREE.Color(0xffff00); // 黄色
     private readonly POINT_MARKER_COLOR: THREE.Color = new THREE.Color(0x00ff00); // 绿色（点标记）
-
 
     constructor(
         sceneController: ISceneController, 
@@ -82,11 +81,11 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
         this.sceneController.orbitControls.enabled = true;
         this._resetCurrentPath();
         this._initVisualCues();
-        this.eventEmitter.emit('modeChanged', { mode: ToolMode.SurfaceMeasure, enabled: true });
+        this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: true });
         this.eventEmitter.emit('measurementUpdated', { length: 0, showControls: true, isMeasuring: true });
 
-        this.sceneController.renderer.domElement.classList.add('measure-cursor');
-        this.sceneController.renderer.domElement.classList.remove('default-cursor');
+        // this.sceneController.renderer.domElement.classList.add('measure-cursor');
+        // this.sceneController.renderer.domElement.classList.remove('default-cursor');
     }
 
     deactivate(): void {
@@ -95,11 +94,11 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
         this._clearCurrentVisuals();
         this._resetCurrentPath();
         this._removeVisualCues();
-        this.eventEmitter.emit('modeChanged', { mode: ToolMode.SurfaceMeasure, enabled: false });
+        this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: false });
         this.eventEmitter.emit('measurementUpdated', { showControls: false, isMeasuring: false });
 
-        this.sceneController.renderer.domElement.classList.remove('measure-cursor');
-        this.sceneController.renderer.domElement.classList.add('default-cursor');
+        // this.sceneController.renderer.domElement.classList.remove('measure-cursor');
+        // this.sceneController.renderer.domElement.classList.add('default-cursor');
     }
 
     private _initVisualCues(): void {
@@ -210,7 +209,8 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
         const { labelObject: savedLengthLabel, lineObject: leaderLine } =
             this._createSavedMeasurementLabel(this.currentSurfaceLength, this.currentSurfaceDisplayPath);
 
-        const measurementData: Omit<SurfaceMeasurementAnnotation, 'id' | 'type'> = {
+        const contextId = this.contextProvider.getCurrentContextPartId() || 'human_model'
+        const measurementData: Omit<SurfaceMeasurementAnnotation, 'id' | 'type' | 'contextId'> = {
             userClickedPoints: this.currentSurfaceUserPoints.map(data => data.point.clone()),
             pathPoints: [...this.currentSurfaceDisplayPath],
             length: this.currentSurfaceLength,
@@ -219,7 +219,7 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
             leaderLineObject: leaderLine,
         };
 
-        const addedAnnotation = this.annotationManager.addSurfaceMeasurement(measurementData);
+        const addedAnnotation = this.annotationManager.addSurfaceMeasurement(measurementData,contextId);
         this.eventEmitter.emit('annotationAdded', addedAnnotation);
         this.eventEmitter.emit('measurementCompleted', addedAnnotation);
         console.log("[SurfaceTool.saveCurrentMeasurement] Measurement saved:", addedAnnotation.id);
@@ -421,7 +421,9 @@ export class SurfaceMeasurementTool extends BaseTool implements ITool {
     private _createSavedMeasurementLabel(length: number, pathPoints: THREE.Vector3[]): { labelObject: CSS2DObject, lineObject: THREE.Line } {
         const labelDiv = document.createElement('div');
         labelDiv.className = 'measurement-label surface-label saved-surface-label';
-        labelDiv.textContent = `${length.toFixed(2)} m`;
+
+        const lengthInCm = length * 100; 
+        labelDiv.textContent = `${lengthInCm.toFixed(2)} cm`;
 
         const labelObject = new CSS2DObject(labelDiv);
         labelObject.layers.set(0);

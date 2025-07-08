@@ -1,7 +1,7 @@
 //@ts-ignore
 import * as THREE from 'three';
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
-import { InteractionEvent, ToolMode, StraightMeasurementAnnotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
+import { InteractionEvent, ToolMode, StraightMeasurementAnnotation, ISceneController, IAnnotationManager, IEventEmitter,IContextProvider } from '../../types/webgl-marking';
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
@@ -20,8 +20,11 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
     private readonly LINE_COLOR: THREE.Color = new THREE.Color(0xffff00); // 黄色
     private readonly PREVIEW_COLOR: THREE.Color = new THREE.Color(0xffff00); // 黄色
 
-    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) { 
-        super(sceneController, annotationManager, eventEmitter); 
+    private contextProvider: IContextProvider;
+
+    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter,contextProvider:IContextProvider) {
+        super(sceneController, annotationManager, eventEmitter);
+        this.contextProvider = contextProvider
     }
 
     getMode(): ToolMode {
@@ -33,14 +36,14 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
         console.log("StraightMeasurementTool activated.");
         this.sceneController.orbitControls.enabled = true; // 测量时禁用相机
         this._resetCurrentMeasurement();
-        this.eventEmitter.emit('modeChanged', { mode: ToolMode.StraightMeasure, enabled: true });
+        this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: true });
     }
 
     deactivate(): void {
         console.log("StraightMeasurementTool deactivated.");
         this.sceneController.orbitControls.enabled = true; // 恢复相机
         this._clearCurrentVisuals(true); // 清理所有视觉元素
-        this.eventEmitter.emit('modeChanged', { mode: ToolMode.StraightMeasure, enabled: false });
+        this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: false });
     }
 
     onPointerDown(event: InteractionEvent): void {
@@ -110,11 +113,11 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
         this.previewLine.renderOrder = 998;
         this.previewLine.computeLineDistances();
         this.sceneController.scene.add(this.previewLine);
-        
+
     }
 
     onKeyDown(event: InteractionEvent): void {
-        
+
         console.log("StraightMeasurementTool: onKeyDown triggered. Original key:", (event.originalEvent as KeyboardEvent).key);
         if ((event.originalEvent as KeyboardEvent).key === 'Escape') {
             this._resetCurrentMeasurement();
@@ -134,7 +137,8 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
         const endPoint = this.currentPoints[1];
         const length = startPoint.distanceTo(endPoint);
 
-        const measurementData: Omit<StraightMeasurementAnnotation, 'id' | 'type'> = {
+        const contextId = this.contextProvider.getCurrentContextPartId() || 'human_model'
+        const measurementData: Omit<StraightMeasurementAnnotation, 'id' | 'type' |'contextId'> = {
             startPoint: startPoint.clone(),
             endPoint: endPoint.clone(),
             length: length,
@@ -144,7 +148,7 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
             lengthLabelObject: this.currentLengthLabel,
         };
 
-        const addedAnnotation = this.annotationManager.addStraightMeasurement(measurementData);
+        const addedAnnotation = this.annotationManager.addStraightMeasurement(measurementData,contextId);
         this.eventEmitter.emit('annotationAdded', addedAnnotation);
         this.eventEmitter.emit('measurementCompleted', addedAnnotation);
 
@@ -218,7 +222,9 @@ export class StraightMeasurementTool extends BaseTool implements ITool {
     private _createLengthLabel(length: number, position: THREE.Vector3): CSS2DObject {
         const labelDiv = document.createElement('div');
         labelDiv.className = 'measurement-label straight-label'; // 添加类名
-        labelDiv.textContent = `${length.toFixed(2)} m`;
+
+        let lengthInCm = length * 100;
+        labelDiv.textContent = `${lengthInCm.toFixed(2)} cm`;
 
         const labelObject = new CSS2DObject(labelDiv);
         labelObject.position.copy(position);

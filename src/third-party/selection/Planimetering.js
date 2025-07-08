@@ -15,6 +15,14 @@ const _LOG_TAG = '[Planimetering.js]';
 
 
 export const Planimetering = (renderer, camera, scene, group) => {
+    console.log(_LOG_TAG, '创建新的 Planimetering 实例');
+    console.log(_LOG_TAG, 'Planimetering 实例参数:', { 
+        renderer: !!renderer, 
+        camera: !!camera, 
+        scene: !!scene, 
+        group: !!group 
+    });
+
     // 事件处理函数引用
     let handlePointerDown;
     let handlePointerUp;
@@ -75,23 +83,24 @@ export const Planimetering = (renderer, camera, scene, group) => {
         firstClickCallback = callback;
     }
     function startMeasurement() {
-        console.log(_LOG_TAG, 'startMeasurement');
+        console.log(_LOG_TAG, 'startMeasurement 被调用');
+        console.log(_LOG_TAG, 'startMeasurement: isRendering当前状态:', isRendering);
         
-        // 重置第一次点击状态，为新的测量做准备
-        firstClickCaptured = false;
-        
-        // 修复：正确定义右键菜单处理函数，存储引用以便后续移除
+        isRendering = true;
+        selectionShape.visible = true;
+
+        console.log(_LOG_TAG, 'startMeasurement: 开始添加事件监听器...');
+
         const handleContextMenu = (e) => {
+            console.log(_LOG_TAG, 'Context menu event triggered');
             e.preventDefault();
-            return false;
         };
-        
-        // 定义事件处理函数
+
         handlePointerDown = (e) => {
+            console.log(_LOG_TAG, 'Right mouse button down - starting lasso');
             // 修复：检查右键按下 (button === 2)
             if(e.button === 2) {
                 e.preventDefault();
-                console.log(_LOG_TAG, 'Right mouse button down - starting lasso');
                 tool.handlePointerDown(e);
             }
         };
@@ -158,12 +167,16 @@ export const Planimetering = (renderer, camera, scene, group) => {
         handlePointerDown.handleContextMenu = handleContextMenu;
     
         // add event listeners
+        console.log(_LOG_TAG, 'startMeasurement: 添加mousedown事件监听器');
         renderer.domElement.addEventListener('mousedown', handlePointerDown);
+        console.log(_LOG_TAG, 'startMeasurement: 添加mouseup事件监听器');
         renderer.domElement.addEventListener('mouseup', handlePointerUp);
+        console.log(_LOG_TAG, 'startMeasurement: 添加mousemove事件监听器');
         renderer.domElement.addEventListener('mousemove', handlePointerMove);
+        console.log(_LOG_TAG, 'startMeasurement: 添加contextmenu事件监听器');
         renderer.domElement.addEventListener('contextmenu', handleContextMenu); // 修复：使用存储的函数引用
         
-        isRendering = true;
+        console.log(_LOG_TAG, 'startMeasurement: 所有事件监听器添加完成，isRendering =', isRendering);
     }
 
     async function showMeasurement() {
@@ -181,6 +194,20 @@ export const Planimetering = (renderer, camera, scene, group) => {
         
         isCalculatingArea = true;
         
+        // 立即通知回调，显示高亮但不包含面积计算结果
+        const lassoPath = tool.points && tool.points.length > 0 ? [...tool.points] : null;
+        console.log(_LOG_TAG, '套索路径点数量:', lassoPath ? Math.floor(lassoPath.length / 3) : 0);
+        
+        // 先回调高亮显示，面积设为 null 表示正在计算
+        if (lassoFinishedCallback) {
+            lassoFinishedCallback({
+                triangles: trianglesData, // 选中的三角面
+                area: null, // 面积正在计算中
+                lassoPath: lassoPath, // 套索路径数据
+                isCalculating: true // 标记正在计算
+            });
+        }
+        
         // 通知 UI 开始计算
         if (eventEmitter) {
             eventEmitter.emit('areaCalculationStarted', { 
@@ -188,33 +215,49 @@ export const Planimetering = (renderer, camera, scene, group) => {
             });
         }
         
-        try {
-            // 使用 Worker 进行面积计算
-            const result = await calculateAreaAsync(highlightMesh.geometry);
-            
-            // 通知 UI 计算完成
-            if (eventEmitter) {
-                eventEmitter.emit('areaCalculationCompleted', { 
-                    area: result.area, 
-                    triangleCount: result.triangleCount 
-                });
+        // 使用 setTimeout 异步执行计算，确保不阻塞高亮显示
+        setTimeout(async () => {
+            try {
+                // 使用 Worker 进行面积计算
+                const result = await calculateAreaAsync(highlightMesh.geometry);
+                
+                // 通知 UI 计算完成
+                if (eventEmitter) {
+                    eventEmitter.emit('areaCalculationCompleted', { 
+                        area: result.area, 
+                        triangleCount: result.triangleCount 
+                    });
+                }
+                
+                // 再次回调，这次包含计算结果
+                if (lassoFinishedCallback) {
+                    lassoFinishedCallback({
+                        triangles: trianglesData, // 选中的三角面
+                        area: result.area, // 使用 Worker 计算的面积
+                        lassoPath: lassoPath, // 套索路径数据
+                        isCalculating: false // 计算完成
+                    });
+                }
+            } catch (error) {
+                console.error(_LOG_TAG, 'Area calculation failed:', error);
+                
+                // 如果 Worker 失败，异步执行同步计算避免阻塞
+                setTimeout(() => {
+                    const fallbackArea = calculateAreaSync(highlightMesh.geometry);
+                    
+                    if (lassoFinishedCallback) {
+                        lassoFinishedCallback({
+                            triangles: trianglesData,
+                            area: fallbackArea,
+                            lassoPath: lassoPath,
+                            isCalculating: false
+                        });
+                    }
+                }, 0);
+            } finally {
+                isCalculatingArea = false;
             }
-            
-            lassoFinishedCallback({
-                triangles: trianglesData, // 选中的三角面
-                area: result.area // 使用 Worker 计算的面积
-            });
-        } catch (error) {
-            console.error(_LOG_TAG, 'Area calculation failed:', error);
-            // 如果 Worker 失败，使用同步计算作为备用
-            const fallbackArea = calculateAreaSync(highlightMesh.geometry);
-            lassoFinishedCallback({
-                triangles: trianglesData,
-                area: fallbackArea
-            });
-        } finally {
-            isCalculatingArea = false;
-        }
+        }, 0);
     }
 
     function exitMeasurement() {
@@ -222,20 +265,31 @@ export const Planimetering = (renderer, camera, scene, group) => {
         isRendering = false;
         selectionShape.visible = false;
 
+        console.log(_LOG_TAG, 'exitMeasurement: 开始移除事件监听器...');
+        console.log(_LOG_TAG, 'exitMeasurement: handlePointerDown存在:', !!handlePointerDown);
+        console.log(_LOG_TAG, 'exitMeasurement: handlePointerUp存在:', !!handlePointerUp);
+        console.log(_LOG_TAG, 'exitMeasurement: handlePointerMove存在:', !!handlePointerMove);
+
         // 移除事件监听器（现在可以安全地访问处理函数）
         if (handlePointerDown) {
             renderer.domElement.removeEventListener('mousedown', handlePointerDown);
+            console.log(_LOG_TAG, 'exitMeasurement: 已移除mousedown事件监听器');
             // 修复：正确移除右键菜单事件监听器
             if (handlePointerDown.handleContextMenu) {
                 renderer.domElement.removeEventListener('contextmenu', handlePointerDown.handleContextMenu);
+                console.log(_LOG_TAG, 'exitMeasurement: 已移除contextmenu事件监听器');
             }
         }
         if (handlePointerUp) {
             renderer.domElement.removeEventListener('mouseup', handlePointerUp);
+            console.log(_LOG_TAG, 'exitMeasurement: 已移除mouseup事件监听器');
         }
         if (handlePointerMove) {
             renderer.domElement.removeEventListener('mousemove', handlePointerMove);
+            console.log(_LOG_TAG, 'exitMeasurement: 已移除mousemove事件监听器');
         }
+
+        console.log(_LOG_TAG, 'exitMeasurement: 所有事件监听器移除完成');
     }
 
     function cancelMeasurement() {
@@ -277,7 +331,7 @@ export const Planimetering = (renderer, camera, scene, group) => {
     function saveMeasurement() {
         console.log(_LOG_TAG, 'saveMeasurement');
         exitMeasurement();
-        
+
         // 重置第一次点击状态，为下一个组做准备
         firstClickCaptured = false;
         
@@ -291,6 +345,19 @@ export const Planimetering = (renderer, camera, scene, group) => {
                 highlightWireframeMesh.geometry = highlightMesh.geometry;
             }
         }
+
+        if (tool && typeof tool.clearPoints === 'function') {
+        tool.clearPoints();
+        console.log(_LOG_TAG, 'saveMeasurement: Cleared tool points.');
+        
+        // 同时强制更新 selectionShape 的几何体为空，防止下一帧渲染旧数据
+        if (selectionShape) {
+            selectionShape.geometry.setAttribute(
+                'position',
+                new THREE.Float32BufferAttribute([], 3)
+            );
+        }
+    }
         
         console.log(_LOG_TAG, 'saveMeasurement: 清除了工具内部状态，为下一次测量做准备');
     }
@@ -391,7 +458,10 @@ export const Planimetering = (renderer, camera, scene, group) => {
             selectionNeedsUpdate = false;
             if (selectionPoints.length > 0) {
                 updateSelection();
-                showMeasurement();
+                // 使用 setTimeout 确保高亮显示先渲染，然后再执行耗时计算
+                setTimeout(() => {
+                    showMeasurement();
+                }, 0);
             }
         }
 
@@ -409,6 +479,8 @@ export const Planimetering = (renderer, camera, scene, group) => {
      *
      * @see https://github.com/gkjohnson/three-mesh-bvh/issues/166#issuecomment-752194034
      */
+    // 移除优化的网格更新器 - 已被二级混合策略替代
+
     function updateSelection() {
 
         const indices = computeSelectedTriangles(mesh, camera, tool, params);
@@ -423,6 +495,11 @@ export const Planimetering = (renderer, camera, scene, group) => {
 
         console.log(_LOG_TAG, 'updateSelection - 总索引:', indices.length, '新索引:', newIndices.length);
 
+        // 直接使用原始更新方法（优化器已被二级混合策略替代）
+        updateSelectionLegacy(indices, newIndices);
+    }
+    
+    function updateSelectionLegacy(indices, newIndices) {
         const indexAttr = mesh.geometry.index;
         const newIndexAttr = highlightMesh.geometry.index;
         console.log(_LOG_TAG, 'updateSelection indexAttr', indexAttr);

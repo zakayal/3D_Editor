@@ -10,8 +10,9 @@ import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 //@ts-ignore
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { ISceneController } from '../../types/webgl-marking';
+import { ISceneController, StandardView } from '../../types/webgl-marking';
 
+//@ts-ignore
 import Stats from 'stats.js';
 import {
     MeshBVH,
@@ -21,13 +22,17 @@ import {
     SAH
 } from 'three-mesh-bvh';
 
-// 这个模块负责 Three.js 的基础设置、模型加载和渲染循环。
+import html2canvas from 'html2canvas'
+
+// 新增：渲染优化相关类型
 interface RenderOptimization {
     skipFrames: number;
     lowQualityMode: boolean;
     dynamicPixelRatio: boolean;
     cullingDistance: number;
 }
+
+
 
 export class SceneController implements ISceneController {
     public renderer: THREE.WebGLRenderer;
@@ -40,7 +45,7 @@ export class SceneController implements ISceneController {
     //新属性实现
     public humanModel: THREE.Group | null = null;
     public scaleBarBaseModel: THREE.Group | null = null;
-    public damageModels: Map<string, THREE.Group> = new Map();
+    public injuryModels: Map<string, THREE.Group> = new Map();
     public activeModelForRaycasting: THREE.Object3D | null = null;
 
     private canvas: HTMLCanvasElement;
@@ -182,6 +187,8 @@ export class SceneController implements ISceneController {
         const objLoader = new OBJLoader();
         const mtlLoader = new MTLLoader();
 
+        mtlLoader.setCrossOrigin('anonymous');
+
         if (mtlUrl) {
             const materials = await mtlLoader.loadAsync(mtlUrl);
             materials.preload();
@@ -198,7 +205,7 @@ export class SceneController implements ISceneController {
      */
     public async loadNewTargetModel(modelUrl: string, mtlUrl?: string): Promise<THREE.Group> {
         this.removeHumanModel();
-        this.damageModels.forEach((_, partId) => this.removeDamageModel(partId));
+        this.injuryModels.forEach((_, partId) => this.removeInjuryModel(partId));
 
         console.log(`Loading new human model from: ${modelUrl}`);
         THREE.Cache.clear();
@@ -226,14 +233,14 @@ export class SceneController implements ISceneController {
      * @param model  要添加的损伤模型THREE.Group对象
      * @returns void
      */
-    public addDamageModel(partId: string, model: THREE.Group): void {
-        if (this.damageModels.has(partId)) {
+    public addInjuryModel(partId: string, model: THREE.Group): void {
+        if (this.injuryModels.has(partId)) {
             console.warn(`Damage model for partId "${partId}" already exists. Replacing it.`);
-            this.removeDamageModel(partId);
+            this.removeInjuryModel(partId);
         }
         this._setupModel(model, true);
         this.scene.add(model);
-        this.damageModels.set(partId, model);
+        this.injuryModels.set(partId, model);
         console.log(`Damage model for partId "${partId}" added to the scene.`);
     }
 
@@ -241,8 +248,8 @@ export class SceneController implements ISceneController {
      * 移除损伤模型
      * @param partId  损伤部位的唯一标识符
      */
-    public removeDamageModel(partId: string): void {
-        const modelToRemove = this.damageModels.get(partId);
+    public removeInjuryModel(partId: string): void {
+        const modelToRemove = this.injuryModels.get(partId);
         if (modelToRemove) {
             this.scene.remove(modelToRemove);
             modelToRemove.traverse((child: any) => {
@@ -253,7 +260,7 @@ export class SceneController implements ISceneController {
                     }
                 }
             });
-            this.damageModels.delete(partId);
+            this.injuryModels.delete(partId);
             if (this.activeModelForRaycasting === modelToRemove) {
                 this.activeModelForRaycasting = null;
             }
@@ -300,7 +307,6 @@ export class SceneController implements ISceneController {
             console.warn("[SceneController] getTargetMeshGeometry: No active model for raycasting.");
             return null;
         }
-
         const mesh = this.findFirstMeshInModel(activeModel);
         if (mesh) {
             return mesh.geometry as THREE.BufferGeometry;
@@ -308,7 +314,6 @@ export class SceneController implements ISceneController {
 
         return null;
     }
-
 
     /**
      * 获取当前激活模型的世界变化矩阵
@@ -323,6 +328,7 @@ export class SceneController implements ISceneController {
 
         }
         const mesh = this.findFirstMeshInModel(activeModel)
+
         return mesh ? mesh.matrixWorld : null;
     }
 
@@ -341,14 +347,14 @@ export class SceneController implements ISceneController {
      * @param partId 要显示的损伤部位的唯一标识符
      * @returns {void}
      */
-    public showDamageModel(partId: string): void {
-        const modelToShow = this.damageModels.get(partId);
+    public showInjuryModel(partId: string): void {
+        const modelToShow = this.injuryModels.get(partId);
         if (!modelToShow) {
             console.error(`No damage model found for partId "${partId}".`);
             return;
         }
         if (this.humanModel) this.humanModel.visible = false;
-        this.damageModels.forEach((model, id) => {
+        this.injuryModels.forEach((model, id) => {
             model.visible = id === partId;
         });
         this.activeModelForRaycasting = modelToShow;
@@ -363,7 +369,7 @@ export class SceneController implements ISceneController {
      */
     public showHumanModel(): void {
         if (this.humanModel) this.humanModel.visible = true;
-        this.damageModels.forEach(model => {
+        this.injuryModels.forEach(model => {
             model.visible = false;
         });
         this.activeModelForRaycasting = this.humanModel;
@@ -373,23 +379,51 @@ export class SceneController implements ISceneController {
     }
 
     /**
-     * 重置相机位置和角度以最佳角度显示指定模型
-     * @param model 需要适配的目标模型对象
+     * 重置相机位置，以标准的、轴对齐的正面视图来最佳地显示指定模型。
+     * @param model 需要适配的目标模型对象。默认为当前的人体模型。
      * @returns {void}
      */
     public resetCameraToFitModel(model: THREE.Group | null = this.humanModel): void {
-        if (!model) return;
+        if (!model) {
+            console.warn("resetCameraToFitModel: 目标模型不存在。");
+            return;
+        }
+
+        // 确保我们使用的是最新的模型变换
+        model.updateMatrixWorld(true);
+
+        // --- 步骤 1: 计算模型的边界信息 ---
         const box = new THREE.Box3().setFromObject(model);
-        const size = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const distance = maxDim * 2.5;
-        const cameraY = Math.max(center.y + distance * 0.4, distance * 0.3);
-        this.camera.position.set(center.x - distance * 0.8, cameraY, center.z + distance * 1.2);
-        const lookAtTarget = new THREE.Vector3(center.x, center.y * 0.3, center.z);
+        const sphere = box.getBoundingSphere(new THREE.Sphere());
+
+        // --- 步骤 2: 计算能容纳整个模型的最佳相机距离 ---
+        // 这个公式利用相机的视场角(FOV)和模型的边界球半径，精确计算距离
+        // 2.5 是一个经验系数，可以微调，让模型周围留出更多或更少的空白
+        const distance = sphere.radius * 2.5 / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+
+        // --- 步骤 3: 设置相机位置和朝向，实现标准正面视图 ---
+        // 将相机放置在模型中心的正前方（沿着Z轴正方向）
+        const cameraPosition = new THREE.Vector3(center.x, center.y, center.z + distance);
+
+        // 相机的“头顶”朝向Y轴正方向
+        const upVector = new THREE.Vector3(0, 1, 0);
+
+        // 相机看向的目标点始终是模型的几何中心
+        const lookAtTarget = center.clone();
+
+        // --- 步骤 4: 应用所有变换 ---
+        this.camera.position.copy(cameraPosition);
+        this.camera.up.copy(upVector);
         this.camera.lookAt(lookAtTarget);
+
+        // 同步更新轨道控制器（OrbitControls）的目标点
         this.orbitControls.target.copy(lookAtTarget);
+
+        // 最后，命令控制器根据新的相机位置和目标点来更新其内部状态
         this.orbitControls.update();
+
+        console.log('[resetCameraToFitModel] 相机已重置为标准的正面视图。');
     }
 
     /**
@@ -432,10 +466,307 @@ export class SceneController implements ISceneController {
         }
 
         this.removeHumanModel();
-        this.damageModels.forEach((_, partId) => this.removeDamageModel(partId));
+        this.injuryModels.forEach((_, partId) => this.removeInjuryModel(partId));
     }
 
     // #endregion
+
+    //#region photoTool function
+
+    /**
+     * 捕获当前渲染器的内容为PNG格式的Base64字符
+     * @param options 
+     * @returns 
+     */
+    public async captureScreenshot(options: {
+        transparentBackground?: boolean;
+        cropRegion?: { x: number; y: number; width: number; height: number };
+        resolutionMultiplier?: number;
+        cameraState?: {
+            position: THREE.Vector3,
+            target: THREE.Vector3,
+            up: THREE.Vector3
+        }
+    } = {}): Promise<string> {
+        const { transparentBackground = true, cropRegion, resolutionMultiplier = 5, cameraState } = options;
+
+        const originalContainer = this.renderer.domElement.parentElement;
+        if (!originalContainer) {
+            throw new Error("截图失败：找不到可供截图的父容器。");
+        }
+
+        const originalCanvas = this.renderer.domElement;
+
+        const captureTarget = originalContainer.cloneNode(true) as HTMLElement
+
+        // 将克隆体移出屏幕
+        document.body.appendChild(captureTarget)
+        captureTarget.style.position = 'absolute'
+        captureTarget.style.left = '-9999px'
+        captureTarget.style.top = '0px'
+
+        if (!captureTarget.id) {
+            captureTarget.id = `webgl-capture-clone-${Date.now()}`
+        }
+
+        // --- 步骤 3: 截图 ---
+        let imageDataUrl = '';
+        try {
+
+            // 准备原始的webgl canvas
+            const originalSize = new THREE.Vector2()
+            this.renderer.getSize(originalSize)
+
+            this.renderer.setSize(originalSize.width, originalSize.height, false)
+            this.css2dRenderer.setSize(originalSize.width, originalSize.height)
+
+            if (cameraState) {
+                this.camera.position.copy(cameraState.position)
+                this.camera.up.copy(cameraState.up)
+                this.camera.lookAt(cameraState.target)
+
+            }
+            this.camera.updateProjectionMatrix()
+
+            // 准备离屏的克隆canvas
+            const clonedCanvas = captureTarget.querySelector('canvas')
+            if (!clonedCanvas) {
+                throw new Error('截图失败')
+            }
+
+            clonedCanvas.width = originalCanvas.width
+            clonedCanvas.height = originalCanvas.height
+
+            const clonedCtx = clonedCanvas.getContext('2d', {
+                willReadFrequently: true
+            })
+            if (!clonedCtx) {
+                throw new Error('截图失败')
+            }
+
+            // 将原始webgl canvas内容印到 离屏canvas
+            this.renderer.render(this.scene, this.camera)
+            this.css2dRenderer.render(this.scene, this.camera)
+            clonedCtx.drawImage(originalCanvas, 0, 0)
+
+            await new Promise(resolve => requestAnimationFrame(resolve))
+
+            // 对移出屏幕的克隆体进行放大应用
+            Object.assign(captureTarget.style, {
+                width: `${originalSize.width}px`,
+                height: `${originalSize.height}px`,
+                transform: `scale(${resolutionMultiplier})`,
+                transformOrigin: 'top left',
+            });
+
+            await new Promise<void>((resolve) => {
+                requestAnimationFrame(() => {
+                    // 强制浏览器 reflow
+                    void captureTarget.offsetHeight;
+                    setTimeout(resolve, 50); // 短暂延迟确保绘制完成
+                });
+            });
+
+            const canvas = await html2canvas(captureTarget, {
+                useCORS: true,
+                backgroundColor: transparentBackground ? null : '#FFFFFF',
+                scale: 1,// 因为我们已经用CSS放大了，所以这里的scale是1
+            });
+
+            imageDataUrl = canvas.toDataURL('image/png');
+        } finally {
+            if (captureTarget.parentElement) {
+                captureTarget.parentElement.removeChild(captureTarget)
+            }
+        }
+
+        if (!imageDataUrl) {
+            throw new Error("截图失败：html2canvas未能生成图像数据。");
+        }
+
+        // --- 步骤 5: 裁剪 (如果需要) ---
+        // 如果没有提供 cropRegion，直接返回完整截图
+        if (!cropRegion) {
+            return imageDataUrl;
+        }
+
+        // 如果提供了 cropRegion，执行裁剪逻辑
+        return new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => {
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+
+                if (!tempCtx) {
+                    return reject(new Error("裁剪失败：无法创建2D上下文。"));
+                }
+
+                // 【关键】裁剪区域的坐标和尺寸也需要根据 resolutionMultiplier 进行缩放
+                // 因为我们操作的是 html2canvas 生成的高分辨率图像
+                const scaledCropRegion = {
+                    x: cropRegion.x * resolutionMultiplier,
+                    y: cropRegion.y * resolutionMultiplier,
+                    width: cropRegion.width * resolutionMultiplier,
+                    height: cropRegion.height * resolutionMultiplier,
+                };
+
+                // 设置临时画布的尺寸为最终裁剪后的尺寸
+                tempCanvas.width = scaledCropRegion.width;
+                tempCanvas.height = scaledCropRegion.height;
+
+                // 在临时画布上绘制原始高分图像的指定区域
+                tempCtx.drawImage(
+                    image, // 源图像 (高分辨率截图)
+                    scaledCropRegion.x,      // 从源图像的哪个X坐标开始切
+                    scaledCropRegion.y,      // 从源图像的哪个Y坐标开始切
+                    scaledCropRegion.width,  // 要切的宽度
+                    scaledCropRegion.height, // 要切的高度
+                    0,                       // 绘制到目标画布的哪个X坐标 (0)
+                    0,                       // 绘制到目标画布的哪个Y坐标 (0)
+                    scaledCropRegion.width,  // 在目标画布上绘制多宽
+                    scaledCropRegion.height  // 在目标画布上绘制多高
+                );
+
+                // 从裁剪后的临时画布中导出最终的图像数据
+                resolve(tempCanvas.toDataURL('image/png'));
+            };
+            image.onerror = () => {
+                reject(new Error("裁剪失败：无法加载截图数据到Image对象。"));
+            };
+
+            // 设置image的源，触发加载
+            image.src = imageDataUrl;
+        });
+    }
+
+
+    public async setCameraToStandardView(view: StandardView): Promise<void> {
+        const target = this.activeModelForRaycasting;
+        if (!target) {
+            console.warn("setCameraToStandardView: 没有激活的目标模型。");
+            return;
+        }
+
+        target.updateMatrixWorld(true);
+
+        const box = new THREE.Box3().setFromObject(target);
+        const center = box.getCenter(new THREE.Vector3());
+
+        // 计算一个合适的距离，确保整个模型都在视野内
+        // 这里我们用边界球的半径乘以一个系数来保证
+        const sphere = box.getBoundingSphere(new THREE.Sphere());
+        const distance = sphere.radius * 2.5 / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+
+        const cameraPosition = new THREE.Vector3();
+        const lookAtTarget = center.clone();
+        let upVector = new THREE.Vector3(0, 1, 0);
+
+        switch (view) {
+            case 'front':
+                cameraPosition.set(center.x, center.y, center.z + distance);
+                break;
+            case 'back':
+                cameraPosition.set(center.x, center.y, center.z - distance);
+                break;
+            case 'left':
+                cameraPosition.set(center.x - distance, center.y, center.z);
+                break;
+            case 'right':
+                cameraPosition.set(center.x + distance, center.y, center.z);
+                break;
+            case 'top':
+                cameraPosition.set(center.x, center.y + distance, center.z);
+                upVector.set(0, 0, -1);
+                break;
+            case 'bottom':
+                cameraPosition.set(center.x, center.y - distance, center.z);
+                upVector.set(0, 0, 1);
+                break;
+        }
+
+        // 应用相机变换
+        this.camera.position.copy(cameraPosition);
+        this.camera.up.copy(upVector);
+        this.camera.lookAt(lookAtTarget);
+
+
+        console.log(`[setCameraToStandardView] ${view} (Axis-Aligned) 视图设置完成`);
+
+        // 使用 Promise 和 requestAnimationFrame 确保渲染完成
+        return new Promise(resolve => {
+            requestAnimationFrame(() => {
+                this.renderer.render(this.scene, this.camera);
+                this.css2dRenderer.render(this.scene, this.camera);
+                requestAnimationFrame(() => {
+                    resolve();
+                });
+            });
+        });
+    }
+
+    public adjustCameraForPhoto(mode: 'wide' | 'default'): void {
+        const fov = this.camera.fov
+        if (mode === 'wide') {
+            // 广角通过增加fov或拉远距离实现，这里使用调整fov
+            this.camera.fov = fov + 30 > 100 ? 100 : fov + 10
+        } else {
+            this.camera.fov = 45
+        }
+
+        this.camera.updateProjectionMatrix()
+    }
+
+    /**
+    * 【新增】将指定对象的当前世界变换"烘焙"到其几何体中。
+    * 这会将对象当前的位姿固化为新的默认状态，并重置其 position, rotation, scale。
+    * @param targetObject 要进行操作的目标对象。
+    */
+    public bakeTransformToObject(targetObject: THREE.Object3D): void {
+        if (!targetObject) {
+            console.error("Bake transform failed: target object is null.");
+            return;
+        }
+
+        console.log(`Baking transform for object: ${targetObject.name}`);
+
+        // 1. 确保获取的是最新的世界变换矩阵
+        targetObject.updateMatrixWorld(true);
+        const transformMatrix = targetObject.matrixWorld.clone();
+
+        // 2. 遍历所有子网格，将世界变换矩阵应用到几何体顶点
+        targetObject.traverse((child:THREE.Object3D) => {
+            if ((child as THREE.Mesh).isMesh) {
+                const mesh = child as THREE.Mesh;
+                mesh.geometry.applyMatrix4(transformMatrix);
+
+                // 重置子网格相对于父对象的局部变换
+                mesh.position.set(0, 0, 0);
+                mesh.quaternion.set(0, 0, 0, 1);
+                mesh.scale.set(1, 1, 1);
+                mesh.updateMatrix(); // 更新局部变换矩阵
+            }
+        });
+
+        // 3. 重置父对象的自身的变换
+        targetObject.position.set(0, 0, 0);
+        targetObject.quaternion.set(0, 0, 0, 1);
+        targetObject.scale.set(1, 1, 1);
+        targetObject.updateMatrixWorld(true);
+
+        // 4.计算烘焙红几何体的真实中心点
+        const box = new THREE.Box3().setFromObject(targetObject)
+
+        const yOffset = box.min.y
+
+        targetObject.position.set(0, -yOffset, 0)
+
+        targetObject.updateMatrixWorld(true)
+
+        this.resetCameraToFitModel(targetObject as THREE.Group);
+        console.log("Transform baked  and recentered successfully.");
+    }
+
+    //#endregion
 
     // #endregion
 
@@ -503,15 +834,26 @@ export class SceneController implements ISceneController {
      * @returns THREE.WebGLRenderTarget
      */
     private _initRenderer(): THREE.WebGLRenderer {
+
+        const contextAttributes: any = {
+            alpha: true,
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: true,
+            stencil: false,
+            willReadFrequently: true // 我们就是要用这个属性
+        };
+
+        const gl = this.canvas.getContext('webgl2', contextAttributes) || this.canvas.getContext('webgl', contextAttributes);
+
+        if (!gl) {
+            throw new Error('无法初始化上下文')
+        }
         const renderer = new THREE.WebGLRenderer({
             canvas: this.canvas,
             antialias: false, // 初始禁用抗锯齿以提高性能
-            alpha: true,
-            powerPreference: 'high-performance',
             logarithmicDepthBuffer: false,
-            preserveDrawingBuffer: false, // 提高性能
             premultipliedAlpha: false,
-            stencil: false // 禁用模板缓冲区
+            context: gl as WebGLRenderingContext
         });
 
         renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
@@ -563,6 +905,7 @@ export class SceneController implements ISceneController {
         const aspectRatio = this.canvas.clientWidth / this.canvas.clientHeight;
         const camera = new THREE.PerspectiveCamera(45, aspectRatio, 0.1, 1000);
         camera.position.set(-4, 3, 6);
+
 
         // 新增：相机优化
         camera.matrixAutoUpdate = true; // 相机需要自动更新
@@ -854,24 +1197,52 @@ export class SceneController implements ISceneController {
         return foundMesh; // 返回查找结果
     }
 
-    private _setupModel(model: THREE.Group, centerAndScale: boolean): void {
+    private _setupModel(model: THREE.Object3D, centerAndScale: boolean): void {
+
         if (centerAndScale) {
+            // --- 步骤 1: 计算归一化变换矩阵 ---
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 1 / maxDim;
 
-            model.position.sub(center);
-            model.scale.multiplyScalar(scale);
-            model.updateMatrixWorld(true);
+            // 创建一个缩放矩阵
+            const scale = (maxDim > 0) ? (1 / maxDim) : 1;
+            const scaleMatrix = new THREE.Matrix4().makeScale(scale, scale, scale);
 
+            // 创建一个平移矩阵，将中心点移到原点
+            const translationMatrix = new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z);
+
+            // 合并成一个总的变换矩阵：先平移，再缩放
+            const transformMatrix = new THREE.Matrix4().multiplyMatrices(scaleMatrix, translationMatrix);
+
+            // --- 步骤 2: 将变换应用到几何体上 (Baking) ---
+            model.traverse((child:THREE.Object3D) => {
+                if ((child as THREE.Mesh).isMesh) {
+                    const mesh = child as THREE.Mesh;
+                    // 直接修改几何体顶点数据
+                    mesh.geometry.applyMatrix4(transformMatrix);
+                }
+            });
+
+            // --- 步骤 3: 重置模型自身的变换 ---
+            // 因为变换已经被"烘焙"进去了，所以我们需要重置 Group 自身的变换
+            model.position.set(0, 0, 0);
+            model.quaternion.set(0, 0, 0, 1);
+            model.scale.set(1, 1, 1);
+
+            // --- 步骤 4: Y轴对齐地面（可选，但推荐保留） ---
+            // 重新计算烘焙后的边界框
             const newBox = new THREE.Box3().setFromObject(model);
             const yOffset = newBox.min.y;
-            model.position.y -= yOffset;
-            model.updateMatrixWorld(true);
+            // 只需要稍微移动一下 Group 的位置即可
+            model.position.y = -yOffset;
         }
 
+        // 更新世界矩阵
+        model.updateMatrixWorld(true);
+
+        // --- 后续的优化逻辑保持不变 ---
         const meshes: THREE.Mesh[] = [];
         model.traverse((child: any) => {
             if (child.isMesh) {
@@ -1001,9 +1372,9 @@ export class SceneController implements ISceneController {
         disposeModelBVH(this.humanModel);
 
         // 2.【核心修正】遍历并清理所有损伤模型的BVH
-        this.damageModels.forEach((damageModel, partId) => {
+        this.injuryModels.forEach((injuryModel, partId) => {
             console.log(`Disposing BVH resources for damage model: ${partId}`);
-            disposeModelBVH(damageModel);
+            disposeModelBVH(injuryModel);
         });
 
         console.log('All BVH resources disposed.');

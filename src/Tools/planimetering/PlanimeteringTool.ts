@@ -1,6 +1,7 @@
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
-import { ToolMode, InteractionEvent, ISceneController, IAnnotationManager, IEventEmitter, PlanimeteringAnnotation } from '../../types/webgl-marking';
+import { ToolMode, InteractionEvent, ISceneController, IAnnotationManager, IEventEmitter, PlanimeteringAnnotation, IContextProvider, IPlanimetering } from '../../types/webgl-marking';
 import { Planimetering } from '../../third-party/selection/Planimetering';
+
 //@ts-ignore
 import * as THREE from 'three';
 //@ts-ignore
@@ -8,12 +9,12 @@ import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
 import { EnhancedIntelligentHighlightSystem } from '../../utils/BasedHighlight/integrated_highlight_system'
 
-/**u
+/**
  * Planimetering 工具 - 用于测量选定区域的面积
  * 这是一个适配器类，将 Planimetering 函数式工具适配为符合 ITool 接口的类
  */
 export class PlanimeteringTool extends BaseTool implements ITool {
-    private planimetering: any;
+    private planimetering!: IPlanimetering | null;
     private isActive: boolean = false;
     private isInitialized: boolean = false;
     private animationFrameId: number | null = null;
@@ -35,8 +36,11 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
     private highlightSystem: EnhancedIntelligentHighlightSystem | null = null;
 
-    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) {
+    private contextProvider: IContextProvider;
+
+    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter, contextProvider: IContextProvider) {
         super(sceneController, annotationManager, eventEmitter);
+        this.contextProvider = contextProvider
     }
 
     // 监听标注被删除的事件，以维护内部状态的一致性
@@ -170,7 +174,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             }
 
             const targetMesh = this.findFirstMeshInModel(activeModel);
-
             // 检查是否有有效的目标模型
             if (!targetMesh) {
                 throw new Error("No vaild mesh object found in active model for planimetering");
@@ -435,6 +438,14 @@ export class PlanimeteringTool extends BaseTool implements ITool {
             clearTimeout(this.restartTimeoutId);
             this.restartTimeoutId = null;
         }
+
+        //重新启动下一次测量
+        // this.restartTimeoutId = window.setTimeout(() => {
+        //     if (this.isActive && this.planimetering) {
+        //         this.planimetering.startMeasurement();
+        //     }
+        //     this.restartTimeoutId = null;
+        // }, 100)
     }
 
     /**
@@ -446,6 +457,19 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         if (!this.currentMeasurement) {
             console.warn("PlanimeteringTool: No current measurement to save.");
             return;
+        }
+
+        const rawArea = this.currentMeasurement.area;
+        let correctedArea = rawArea;
+
+        if (this.workGroup && this.workGroup.scale) {
+            const scale = this.workGroup.scale;
+            console.log('scale', scale.x, scale.y);
+
+            correctedArea = rawArea * scale.x * scale.y;
+            console.log(`PlanimeteringTool: Area corrected. Raw: ${rawArea}, Corrected: ${correctedArea}, Scale: {x: ${scale.x}, y: ${scale.y}}`);
+        } else {
+            console.warn("PlanimeteringTool: Could not find measured mesh or its scale for area correction. Using raw area.");
         }
 
         // 创建持久化的高亮网格（独立于工具生命周期）
@@ -461,31 +485,35 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         }
 
         // 为当前测量创建面积标签
-        const areaLabel = this._createAreaLabel(this.currentMeasurement.area, highlightCenter);
+        const areaLabel = this._createAreaLabel(correctedArea, highlightCenter);
         console.log("PlanimeteringTool: Area label created for measurement:", this.currentMeasurement.area);
 
+        // 获取当前的contextId
+        const contextId = this.contextProvider.getCurrentContextPartId() || 'human_model'
         // 创建标注对象
-        const annotationData: Omit<PlanimeteringAnnotation, 'id' | 'type'> = {
-            area: this.currentMeasurement.area,
+        const annotationData: Omit<PlanimeteringAnnotation, 'id' | 'type' | 'contextId'> = {
+            area: correctedArea,
             triangles: this.currentMeasurement.triangles,
             timestamp: new Date().toISOString(),
             highlightMesh: persistentHighlightMesh,
             areaLabelObject: areaLabel,
-            totalArea: this.currentMeasurement.area // 单个测量，总面积就是当前面积
+            totalArea: correctedArea // 单个测量，总面积就是当前面积
         };
 
-        const annotation = this.annotationManager.addPlanimetering(annotationData);
+        const annotation = this.annotationManager.addPlanimetering(annotationData, contextId);
 
         console.log("PlanimeteringTool: Measurement saved successfully.");
         console.log("PlanimeteringTool: Area:", this.currentMeasurement.area);
         console.log("PlanimeteringTool: Persistent highlight mesh created and added to scene.");
 
+        this.eventEmitter.emit('measurementCompleted', annotation);
+
         // 通知系统测量已保存
         this.eventEmitter.emit('measurementSaved', {
             ...annotation,
-            area: this.currentMeasurement.area,
+            area: correctedArea,
             triangles: this.currentMeasurement.triangles,
-            totalArea: this.currentMeasurement.area,
+            totalArea: correctedArea,
             savedCount: 1
         });
         this.eventEmitter.emit('annotationAdded', annotation);
@@ -499,8 +527,9 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         this.currentMeasurement = null;
 
         // 通知用户测量已完成
+        const areaInCm2 = correctedArea * 10000;
         this.eventEmitter.emit('notification', {
-            message: `面积测量已完成：${annotation.area.toFixed(2)} m²`,
+            message: `面积测量已完成：${areaInCm2.toFixed(2)} cm²`,
             type: 'info'
         });
 
@@ -665,23 +694,20 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         console.log("PlanimeteringTool: Work group children count:", this.workGroup.children.length);
 
         // 查找高亮网格
-        const highlightMesh = this.workGroup.children.find((child: THREE.Object3D) =>{
-            if(!(child as THREE.Mesh).isMesh)
-            {
+        const highlightMesh = this.workGroup.children.find((child: THREE.Object3D) => {
+            if (!(child as THREE.Mesh).isMesh) {
                 return false;
             }
 
             const mesh = child as THREE.Mesh;
             const material = mesh.material;
 
-            if(Array.isArray(material))
-            {
+            if (Array.isArray(material)) {
                 return false;
             }
 
-            if(material && 'color' in material &&(material as any).color instanceof THREE.Color)
-            {
-                const materialColor = (material as { color:THREE.Color}).color;
+            if (material && 'color' in material && (material as any).color instanceof THREE.Color) {
+                const materialColor = (material as { color: THREE.Color }).color;
                 return materialColor.getHex() === 0xff0000;
             }
 
@@ -815,7 +841,9 @@ export class PlanimeteringTool extends BaseTool implements ITool {
     private _createAreaLabel(area: number, position: THREE.Vector3): CSS2DObject {
         const labelDiv = document.createElement('div');
         labelDiv.className = 'measurement-label straight-label'; // 使用与直线测距一致的样式
-        labelDiv.textContent = `${area.toFixed(2)} m²`;
+
+        const areaInCm2 = area * 10000;
+        labelDiv.textContent = `${areaInCm2.toFixed(2)} cm²`;
 
         const labelObject = new CSS2DObject(labelDiv);
         labelObject.position.copy(position);
@@ -831,7 +859,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
         if (!activeModel) return;
 
-        const targetMesh = this.findFirstMeshInModel(activeModel);
+        const targetMesh = this.findFirstMeshInModel(activeModel)
 
         if (!targetMesh) return;
 
@@ -875,12 +903,6 @@ export class PlanimeteringTool extends BaseTool implements ITool {
 
     }
 
-    /**
-    * Helper method: Finds and returns the first valid mesh within a model.
-    * This pattern is robust and works well with TypeScript's control flow analysis.
-    * @param model The Object3D to search within.
-    * @returns The first found THREE.Mesh, or null if none is found.
-    */
     private findFirstMeshInModel(model: THREE.Object3D): THREE.Mesh | null {
         let foundMesh: THREE.Mesh | null = null;
         model.traverse((child: THREE.Object3D) => {
@@ -893,6 +915,7 @@ export class PlanimeteringTool extends BaseTool implements ITool {
         });
         return foundMesh;
     }
+
 
     dispose(): void {
         console.log("PlanimeteringTool: Disposing...");

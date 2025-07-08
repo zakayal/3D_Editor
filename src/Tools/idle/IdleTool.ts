@@ -1,15 +1,15 @@
 //@ts-ignore
-import * as THREE from 'three';
+import * as THREE from '@ys/three';
 import { BaseTool, ITool } from '../../components/Base-tools/BaseTool';
-import { InteractionEvent, ToolMode, Annotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking'; 
+import { InteractionEvent, ToolMode, Annotation, ISceneController, IAnnotationManager, IEventEmitter } from '../../types/webgl-marking';
 
 export class IdleTool extends BaseTool implements ITool {
     private selectedAnnotationId: string | null = null;
-    private raycaster = new THREE.Raycaster(); 
+    private raycaster = new THREE.Raycaster();
     private unsubscribeAnnotationRemoved: (() => void) | null = null; // 用于存储取消订阅函数
 
-    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) { 
-        super(sceneController, annotationManager, eventEmitter); 
+    constructor(sceneController: ISceneController, annotationManager: IAnnotationManager, eventEmitter: IEventEmitter) {
+        super(sceneController, annotationManager, eventEmitter);
         // 设置 Raycaster 对线的拾取阈值 (根据需要调整)
         this.raycaster.params.Line = { threshold: 0.05 };
     }
@@ -24,18 +24,19 @@ export class IdleTool extends BaseTool implements ITool {
         console.log("IdleTool activated.");
         // 允许相机控制
         this.sceneController.orbitControls.enabled = true;
+        this.sceneController.orbitControls.mouseButtons.RIGHT = THREE.MOUSE.PAN
         this.sceneController.css2dRenderer.domElement.style.pointerEvents = 'none';
 
-        this.eventEmitter.emit('modeChanged', { mode: ToolMode.Idle, enabled: true });
+        this.eventEmitter.emit('modeChanged', { mode: this.getMode(), enabled: true });
 
         // 游标类名处理，UI层应监听 modeChanged 事件来处理，这里直接操作是为了快速实现。
         // 更好的做法是：UI层订阅 modeChanged 事件，并根据 mode 来设置 canvas 的 cursor 样式。
-        this.sceneController.renderer.domElement.classList.remove('measure-cursor');
-        this.sceneController.renderer.domElement.classList.add('default-cursor');
+        // this.sceneController.renderer.domElement.classList.remove('measure-cursor');
+        // this.sceneController.renderer.domElement.classList.add('default-cursor');
 
         this.unsubscribeAnnotationRemoved = this.eventEmitter.on('annotationRemoved', ({ id }) => {
             if (this.selectedAnnotationId === id) {
-                this.deselectCurrent(); 
+                this.deselectCurrent();
             }
         });
     }
@@ -61,18 +62,18 @@ export class IdleTool extends BaseTool implements ITool {
         const selectableObjects: THREE.Object3D[] = [];
         this.annotationManager.getAllAnnotations().forEach(anno => {
             switch (anno.type) {
-                case ToolMode.ScaleBar: 
-                    selectableObjects.push(anno.object3D); 
+                case ToolMode.ScaleBar:
+                    selectableObjects.push(anno.object3D);
                     break;
-                case ToolMode.SurfaceMeasure: 
+                case ToolMode.SurfaceMeasure:
                     // 只拾取保存后的标签的代理对象
                     if (anno.proxyObject) selectableObjects.push(anno.proxyObject);
                     break;
-                case ToolMode.StraightMeasure: 
+                case ToolMode.StraightMeasure:
                     // 只拾取标签的代理对象
                     if (anno.proxyObject) selectableObjects.push(anno.proxyObject);
                     break;
-                case ToolMode.Planimetering: 
+                case ToolMode.Planimetering:
                     // 只拾取面积标签的代理对象，不允许直接点击高亮网格
                     if (anno.proxyObject) selectableObjects.push(anno.proxyObject);
                     break;
@@ -81,7 +82,7 @@ export class IdleTool extends BaseTool implements ITool {
 
         // 2. 执行射线投射
         this.raycaster.setFromCamera(event.pointer, this.sceneController.camera);
-        const intersects = this.raycaster.intersectObjects(selectableObjects, true); 
+        const intersects = this.raycaster.intersectObjects(selectableObjects, true);
 
         if (intersects.length > 0) {
             // 3. 查找被点击对象的标注物 ID
@@ -90,8 +91,8 @@ export class IdleTool extends BaseTool implements ITool {
 
             if (foundId) {
                 if (foundId !== this.selectedAnnotationId) {
-                    this.deselectCurrent(); 
-                    this.select(foundId); 
+                    this.deselectCurrent();
+                    this.select(foundId);
                 } else {
                     this.deselectCurrent();
                 }
@@ -116,7 +117,7 @@ export class IdleTool extends BaseTool implements ITool {
             // 通过事件通知 UI 层显示删除按钮
             this.eventEmitter.emit('annotationSelected', {
                 id: id,
-                type: annotation.type as ToolMode, 
+                type: annotation.type as ToolMode,
                 position: buttonPosition
             });
             // 高亮
@@ -129,7 +130,7 @@ export class IdleTool extends BaseTool implements ITool {
         if (this.selectedAnnotationId) {
             const annotation = this.annotationManager.getAnnotation(this.selectedAnnotationId);
             if (annotation) {
-                this.highlightAnnotation(annotation, false); 
+                this.highlightAnnotation(annotation, false);
             }
             console.log("Annotation deselected:", this.selectedAnnotationId);
 
@@ -144,12 +145,12 @@ export class IdleTool extends BaseTool implements ITool {
      * @param highlight 是否高亮
      */
     private highlightAnnotation(annotation: Annotation, highlight: boolean): void {
-        const highlightColor = new THREE.Color(0x00ff00); // 绿色高亮
+        const highlightColor = new THREE.Color(0xF56D27); // 绿色高亮
         const defaultSurfaceLineColor = new THREE.Color(0xff0000); // 表面测量默认红色
         const defaultStraightLineColor = new THREE.Color(0xffff00); // 直线测量默认黄色
 
         switch (annotation.type) {
-            case ToolMode.ScaleBar: 
+            case ToolMode.ScaleBar:
                 annotation.object3D.traverse((child: THREE.Object3D) => {
                     const mesh = child as THREE.Mesh;
                     if (mesh.isMesh && mesh.material) {
@@ -166,7 +167,7 @@ export class IdleTool extends BaseTool implements ITool {
                     }
                 });
                 break;
-            case ToolMode.SurfaceMeasure:   
+            case ToolMode.SurfaceMeasure:
                 if (annotation.curveLineObject) {
                     (annotation.curveLineObject.material as THREE.LineBasicMaterial).color.copy(highlight ? highlightColor : defaultSurfaceLineColor);
                 }
@@ -178,10 +179,10 @@ export class IdleTool extends BaseTool implements ITool {
                     }
                 }
                 if (annotation.leaderLineObject) {
-                     (annotation.leaderLineObject.material as THREE.LineBasicMaterial).color.copy(highlight ? highlightColor : defaultSurfaceLineColor);
+                    (annotation.leaderLineObject.material as THREE.LineBasicMaterial).color.copy(highlight ? highlightColor : defaultSurfaceLineColor);
                 }
                 break;
-            case ToolMode.StraightMeasure: 
+            case ToolMode.StraightMeasure:
                 if (annotation.lineObject) {
                     (annotation.lineObject.material as THREE.LineBasicMaterial).color.copy(highlight ? highlightColor : defaultStraightLineColor);
                 }
@@ -210,25 +211,17 @@ export class IdleTool extends BaseTool implements ITool {
                         annotation.areaLabelObject.element.classList.remove('highlighted-label');
                     }
                 }
-                // 只高亮属于当前标注的组标签
-                if (annotation.groupLabel && annotation.groupLabel.element) {
-                    if (highlight) {
-                        annotation.groupLabel.element.classList.add('highlighted-label');
-                    } else {
-                        annotation.groupLabel.element.classList.remove('highlighted-label');
-                    }
-                }
                 // 只高亮属于当前标注的高亮网格，并确保不影响其他网格
-                if (annotation.highlightMesh && 
-                    annotation.highlightMesh.geometry && 
+                if (annotation.highlightMesh &&
+                    annotation.highlightMesh.geometry &&
                     annotation.highlightMesh.geometry.drawRange.count > 0) {
-                    
+
                     const material = annotation.highlightMesh.material as THREE.MeshBasicMaterial;
-                    
+
                     // 验证这个网格确实属于当前标注
                     const meshId = annotation.highlightMesh.userData?.measurementId || 'unknown';
                     console.log(`高亮网格 - 标注ID: ${annotation.id}, 网格ID: ${meshId}`);
-                    
+
                     if (highlight) {
                         // 使用标注ID和网格ID的组合作为唯一标识符
                         const colorKey = `originalColor_${annotation.id}_${meshId}`;
@@ -255,60 +248,55 @@ export class IdleTool extends BaseTool implements ITool {
         let position = new THREE.Vector3();
         try {
             switch (annotation.type) {
-                case ToolMode.ScaleBar: 
+                case ToolMode.ScaleBar:
                     position = annotation.object3D.position.clone();
                     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(annotation.object3D.quaternion);
                     position.add(up.multiplyScalar(0.05));
                     break;
-                case ToolMode.SurfaceMeasure: 
+                case ToolMode.SurfaceMeasure:
                     // 如果有保存的标签，则使用标签位置作为参考
                     if (annotation.savedLabelObject) {
                         position.copy(annotation.savedLabelObject.position);
                         // 在标签上方偏移一点
-                        position.y += 0.02; 
+                        position.y += 0.02;
                     } else if (annotation.pathPoints.length > 0) {
                         // 否则 fallback 到路径中点
                         const midIndex = Math.floor(annotation.pathPoints.length / 2);
                         position = annotation.pathPoints[midIndex].clone();
-                        position.y += 0.05; 
+                        position.y += 0.05;
                     }
                     break;
-                case ToolMode.StraightMeasure: 
+                case ToolMode.StraightMeasure:
                     // 如果有长度标签，则使用标签位置作为参考
                     if (annotation.lengthLabelObject) {
                         position.copy(annotation.lengthLabelObject.position);
                         // 在标签上方偏移一点
-                        position.y += 0.02; 
+                        position.y += 0.02;
                     } else {
                         // 否则 fallback 到线段中点
                         position = new THREE.Vector3().addVectors(annotation.startPoint, annotation.endPoint).multiplyScalar(0.5);
-                        position.y += 0.05; 
+                        position.y += 0.05;
                     }
                     break;
                 case ToolMode.Planimetering:
-                    // 优先使用组标签位置，其次是面积标签位置
-                    if (annotation.groupLabel) {
-                        position.copy(annotation.groupLabel.position);
-                        // 在标签上方偏移一点
-                        position.y += 0.02; 
-                    } else if (annotation.areaLabelObject) {
+                    if (annotation.areaLabelObject) {
                         position.copy(annotation.areaLabelObject.position);
                         // 在标签上方偏移一点
-                        position.y += 0.02; 
+                        position.y += 0.02;
                     } else if (annotation.firstClickPosition) {
                         // 否则 fallback 到第一次点击位置
                         position.copy(annotation.firstClickPosition);
-                        position.y += 0.05; 
+                        position.y += 0.05;
                     }
                     break;
             }
         } catch (error) {
             console.error("Error calculating button position:", error, annotation);
 
-            if (annotation.type === ToolMode.ScaleBar) position = annotation.object3D.position.clone(); 
-            else if (annotation.type === ToolMode.StraightMeasure) position = annotation.startPoint.clone(); 
+            if (annotation.type === ToolMode.ScaleBar) position = annotation.object3D.position.clone();
+            else if (annotation.type === ToolMode.StraightMeasure) position = annotation.startPoint.clone();
             else if (annotation.type === ToolMode.SurfaceMeasure && annotation.pathPoints.length > 0) position = annotation.pathPoints[0].clone();
-            else if (annotation.type === ToolMode.Planimetering && annotation.highlightMesh) position = annotation.highlightMesh.position.clone(); 
+            else if (annotation.type === ToolMode.Planimetering && annotation.highlightMesh) position = annotation.highlightMesh.position.clone();
         }
         return position;
     }
@@ -324,7 +312,7 @@ export class IdleTool extends BaseTool implements ITool {
                 this.eventEmitter.emit('annotationRemoved', { id: idToDelete });
             }
         }
-        
+
         if ((event.originalEvent as KeyboardEvent).key === 'Escape') {
             this.deselectCurrent();
         }

@@ -1,4 +1,4 @@
-//@ts-ignore
+// @ts-ignore
 import * as THREE from 'three';
 import {
     Annotation,
@@ -6,35 +6,41 @@ import {
     SurfaceMeasurementAnnotation,
     StraightMeasurementAnnotation,
     PlanimeteringAnnotation,
+    PhotoAnnotation,
     ToolMode,
-    IAnnotationManager, 
+    IAnnotationManager,
     ISceneController,
-    HighlightAnnotation  
+    HighlightAnnotation,
+    InjuryContext,
+    AnnotationFilter
 } from '../../types/webgl-marking';
 //@ts-ignore
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
+
+
 /**
  * 管理场景中所有标注物的生命周期（添加、删除、查找）。
  */
-export class AnnotationManager implements IAnnotationManager { 
-    private sceneController: ISceneController;  
+export class AnnotationManager implements IAnnotationManager {
+    private sceneController: ISceneController;
     private annotations: Map<string, Annotation> = new Map();
 
     private proxyGeometry: THREE.PlaneGeometry;
     private proxyMaterial: THREE.MeshBasicMaterial;
 
-    constructor(sceneController: ISceneController) {  
+    constructor(sceneController: ISceneController) {
         this.sceneController = sceneController;
 
+        //标签的材料属性
         this.proxyGeometry = new THREE.PlaneGeometry(0.1, 0.05);
         this.proxyMaterial = new THREE.MeshBasicMaterial({
             transparent: true,
-            opacity:0,
-            depthTest:false,
-            depthWrite:false,
-            side:THREE.DoubleSide,
-            
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+
         });
     }
 
@@ -45,24 +51,15 @@ export class AnnotationManager implements IAnnotationManager {
      * @param data - 比例尺标注所需数据。
      * @returns 创建的标注对象。
      */
-    public addScaleBar(data: Omit<ScaleBarAnnotation, 'id' | 'type'>): ScaleBarAnnotation {
+    public addScaleBar(data: Omit<ScaleBarAnnotation, 'id' | 'type' | 'contextId'>, contextId: string): ScaleBarAnnotation {
         const id = `sb-${Date.now()}`;
-        const scaleBar: ScaleBarAnnotation = {
-            ...data,
-            id,
-            type: 'scale_bar',
-        };
-
-        // 为所有子对象设置 userData，以便于拾取
+        const scaleBar: ScaleBarAnnotation = { ...data, id, contextId, type: 'scale_bar' };
         scaleBar.object3D.userData = { annotationId: id, type: ToolMode.ScaleBar };
         scaleBar.object3D.traverse((child: THREE.Object3D) => {
             child.userData = { annotationId: id, type: ToolMode.ScaleBar };
         });
-
-
         this.annotations.set(id, scaleBar);
         this.sceneController.scene.add(scaleBar.object3D);
-        console.log("Scale bar added:", id);
         return scaleBar;
     }
 
@@ -71,41 +68,16 @@ export class AnnotationManager implements IAnnotationManager {
          * @param data - 表面测量标注所需数据。
          * @returns 创建的标注对象。
          */
-    public addSurfaceMeasurement(data: Omit<SurfaceMeasurementAnnotation, 'id' | 'type'>): SurfaceMeasurementAnnotation {
-        const id = `sm-${Date.now()}`;
-        const measurement: SurfaceMeasurementAnnotation = {
-            ...data,
-            id,
+    public addSurfaceMeasurement(data: Omit<SurfaceMeasurementAnnotation, 'id' | 'type' | 'contextId'>, contextId: string): SurfaceMeasurementAnnotation {
+        return this._createAndRegisterAnnotation(data, {
+            idPrefix: 'sm',
             type: 'surface_curve',
-        };
+            toolMode: ToolMode.SurfaceMeasure,
+            contextId: contextId,
 
-        const userDataPayload = { annotationId: id, type: ToolMode.SurfaceMeasure };
-
-        if (measurement.curveLineObject) {
-            measurement.curveLineObject.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.curveLineObject);
-        }
-        if (measurement.savedLabelObject) {
-            measurement.savedLabelObject.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.savedLabelObject);
-
-            // 为表面测量标签创建代理对象
-            const proxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial);
-            proxyMesh.position.copy(measurement.savedLabelObject.position);
-
-            proxyMesh.renderOrder = 996; // 比标签低一点，不遮挡标签，但确保在场景中
-            proxyMesh.userData = userDataPayload; 
-            this.sceneController.scene.add(proxyMesh);
-            measurement.proxyObject = proxyMesh; 
-        }
-        if (measurement.leaderLineObject) {
-            measurement.leaderLineObject.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.leaderLineObject);
-        }
-
-        this.annotations.set(id, measurement);
-        console.log("Surface measurement added:", id);
-        return measurement;
+            getObjects: (anno) => [anno.curveLineObject, anno.savedLabelObject, anno.leaderLineObject],
+            hasLabelProxy: true
+        })
     }
 
     /**
@@ -113,43 +85,16 @@ export class AnnotationManager implements IAnnotationManager {
      * @param data - 直线测量标注所需数据。
      * @returns 创建的标注对象。
      */
-    public addStraightMeasurement(data: Omit<StraightMeasurementAnnotation, 'id' | 'type'>): StraightMeasurementAnnotation {
-        const id = `stm-${Date.now()}`;
-        const measurement: StraightMeasurementAnnotation = {
-            ...data,
-            id,
+    public addStraightMeasurement(data: Omit<StraightMeasurementAnnotation, 'id' | 'type' | 'contextId'>, contextId: string): StraightMeasurementAnnotation {
+        return this._createAndRegisterAnnotation(data, {
+            idPrefix: 'stm',
             type: 'straight_line',
-        };
+            toolMode: ToolMode.StraightMeasure,
+            contextId: contextId,
 
-        const userDataPayload = { annotationId: id, type: ToolMode.StraightMeasure };
-
-        if (measurement.lineObject) {
-            measurement.lineObject.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.lineObject);
-        }
-        if (measurement.startSphere) {
-            measurement.startSphere.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.startSphere);
-        }
-        if (measurement.endSphere) {
-            measurement.endSphere.userData = userDataPayload;
-            this.sceneController.scene.add(measurement.endSphere);
-        }
-        if (measurement.lengthLabelObject) {
-            this.sceneController.scene.add(measurement.lengthLabelObject);
-
-            // 为直线测量标签创建代理对象
-            const proxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial);
-            proxyMesh.position.copy(measurement.lengthLabelObject.position);
-            proxyMesh.renderOrder = 996;
-            proxyMesh.userData = userDataPayload;
-            this.sceneController.scene.add(proxyMesh);
-            measurement.proxyObject = proxyMesh; // 存储代理对象引用
-        }
-
-        this.annotations.set(id, measurement);
-        console.log("Straight measurement added:", id);
-        return measurement;
+            getObjects: (anno) => [anno.lineObject, anno.startSphere, anno.endSphere, anno.lengthLabelObject],
+            hasLabelProxy: true
+        })
     }
 
     /**
@@ -157,63 +102,16 @@ export class AnnotationManager implements IAnnotationManager {
      * @param data - 面积测量标注所需数据。
      * @returns 创建的标注对象。
      */
-    public addPlanimetering(data: Omit<PlanimeteringAnnotation, 'id' | 'type'>): PlanimeteringAnnotation {
-        const id = `pm-${Date.now()}`;
-        const planimetering: PlanimeteringAnnotation = {
-            ...data,
-            id,
+    public addPlanimetering(data: Omit<PlanimeteringAnnotation, 'id' | 'type' | 'contextId'>, contextId: string): PlanimeteringAnnotation {
+        return this._createAndRegisterAnnotation(data, {
+            idPrefix: 'pm',
             type: 'planimetering',
-        };
+            toolMode: ToolMode.Planimetering,
+            contextId: contextId,
 
-        const userDataPayload = { annotationId: id, type: ToolMode.Planimetering };
-        
-        // 为高亮网格设置 userData，以便于拾取
-        if (planimetering.highlightMesh) {
-            planimetering.highlightMesh.userData = userDataPayload;
-            this.sceneController.scene.add(planimetering.highlightMesh);
-        }
-        
-        // 添加面积标签到场景
-        if (planimetering.areaLabelObject) {
-            this.sceneController.scene.add(planimetering.areaLabelObject);
-
-            // 为面积标签创建代理对象以支持点击删除
-            const proxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial);
-            proxyMesh.position.copy(planimetering.areaLabelObject.position);
-            proxyMesh.renderOrder = 996;
-            proxyMesh.userData = userDataPayload; // 使用同一个标注ID
-            this.sceneController.scene.add(proxyMesh);
-            planimetering.proxyObject = proxyMesh; // 存储代理对象引用
-        }
-        
-        // 添加组标签到场景（如果有的话）
-        if (planimetering.groupLabel) {
-            this.sceneController.scene.add(planimetering.groupLabel);
-            
-            // 为组标签创建代理对象以支持点击删除
-            const groupProxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial);
-            groupProxyMesh.position.copy(planimetering.groupLabel.position);
-            groupProxyMesh.renderOrder = 996;
-            
-            // 关键修改：组标签使用同一个标注ID，而不是创建独立的ID
-            groupProxyMesh.userData = userDataPayload; // 使用同一个标注ID
-            this.sceneController.scene.add(groupProxyMesh);
-            
-            // 将组标签的代理对象也存储在主标注中，而不是创建独立标注
-            // 这样可以通过主标注一次性删除所有相关对象
-            if (!planimetering.proxyObject) {
-                planimetering.proxyObject = groupProxyMesh;
-            } else {
-                // 如果已经有面积标签的代理对象，将组标签代理对象存储在专用字段中
-                planimetering.groupProxyObject = groupProxyMesh;
-            }
-            
-            console.log("Group label added with same annotation ID:", id);
-        }
-
-        this.annotations.set(id, planimetering);
-        console.log("Planimetering measurement added:", id, "Area:", planimetering.area, "Total Area:", planimetering.totalArea);
-        return planimetering;
+            getObjects: (anno) => [anno.highlightMesh, anno.areaLabelObject],
+            hasLabelProxy: true
+        })
     }
 
     /**
@@ -221,123 +119,159 @@ export class AnnotationManager implements IAnnotationManager {
      * @param data - 高亮标注所需数据。
      * @returns 创建的标注对象。
      */
-    public addHighlightAnnotation(data: Omit<HighlightAnnotation, 'id' | 'type'>): HighlightAnnotation {
-        const id = `hl-${Date.now()}`;
-        const annotation: HighlightAnnotation = {
-            ...data,
-            id,
+    public addHighlightAnnotation(data: Omit<HighlightAnnotation, 'id' | 'type' | 'contextId'>, contextId: string): HighlightAnnotation {
+        const annotation = this._createAndRegisterAnnotation(data, {
+            idPrefix: 'hl',
             type: 'highlight',
+            toolMode: ToolMode.Highlight,
+            contextId: contextId,
+
+            getObjects: (anno) => [anno.labelObject, anno.leaderLineObject],
+            hasLabelProxy: true
+        })
+
+        const userDataPayload = {
+            annotationId: annotation.id,
+            type: ToolMode.Highlight,
+            materialKey: annotation.materialKey // 添加特殊字段
         };
 
-        const userDataPayload = { annotationId: id, type: ToolMode.Highlight, materialKey: annotation.materialKey };
+        [annotation.labelObject, annotation.leaderLineObject, (annotation as any).proxyObject].forEach(obj => {
+            if (obj) obj.traverse((child:THREE.Object3D) => { child.userData = userDataPayload; });
+        });
 
-        // 添加标签
-        if (annotation.labelObject) {
-            this.sceneController.scene.add(annotation.labelObject);
-            
-            // 为标签创建代理对象以便拾取
-            const proxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial);
-            proxyMesh.position.copy(annotation.labelObject.position);
-            proxyMesh.renderOrder = 996;
-            proxyMesh.userData = userDataPayload;
-            this.sceneController.scene.add(proxyMesh);
-            annotation.proxyObject = proxyMesh;
+        return annotation
+    }
+
+    public addOrUpdateSummaryHighlight(context: InjuryContext): void {
+        const labelText = this._formatSummaryText(context);
+
+        // 汇总标签的ID与context的ID（即partId）保持一致，方便查找
+        const summaryId = context.id;
+        const existingAnnotation = this.annotations.get(summaryId) as HighlightAnnotation | undefined;
+
+        if (existingAnnotation && existingAnnotation.labelObject) {
+            existingAnnotation.labelObject.element.innerHTML = labelText;
+        } else {
+            const labelDiv = document.createElement('div');
+            labelDiv.className = 'measurement-label summary-label';
+            labelDiv.innerHTML = labelText;
+
+            const labelObject = new CSS2DObject(labelDiv);
+
+            // --- 引导线和标签定位的复杂逻辑 START ---
+
+            // 步骤1: 定义偏移量，您可以调整这些值来改变样式
+            const horizontalOffset = 0.3; // 标签水平偏离锚点的距离
+            const verticalOffset = 0.1;   // 标签垂直偏离锚点的距离
+            const elbowHorizontalOffset = 0.05; // 拐点水平偏离锚点的距离
+
+            // 步骤2: 根据锚点在身体的左侧还是右侧，决定标签的偏移方向
+            const side = context.anchorPoint.x >= 0 ? 1 : -1; // 1代表右侧, -1代表左侧
+
+            // 步骤3: 计算标签的最终摆放位置
+            const labelPosition = new THREE.Vector3(
+                context.anchorPoint.x + (horizontalOffset * side), // 水平偏移
+                context.anchorPoint.y + verticalOffset,             // 垂直偏移
+                context.anchorPoint.z                               // Z轴保持一致
+            );
+            labelObject.position.copy(labelPosition);
+
+            // 步骤4: 计算“拐点”的位置
+            const elbowPoint = new THREE.Vector3(
+                context.anchorPoint.x + (elbowHorizontalOffset * side), // 水平偏移（较小）
+                labelPosition.y,                                      // Y轴与标签位置平齐
+                context.anchorPoint.z                                 // Z轴与锚点平齐
+            );
+
+            // 步骤5: 使用三个点来创建引导线几何体
+            const leaderLinePoints = [labelPosition, elbowPoint, context.anchorPoint];
+
+            // --- 引导线和标签定位的复杂逻辑 END ---
+
+            const lineMaterial = new THREE.LineBasicMaterial({ color: 0x000000, depthTest: false }); // 使用之前修改的黑色
+            const lineGeometry = new THREE.BufferGeometry().setFromPoints(leaderLinePoints);
+            const leaderLine = new THREE.Line(lineGeometry, lineMaterial);
+            leaderLine.renderOrder = 997;
+
+            const newAnnotation = this.addHighlightAnnotation({
+                name: context.name,
+                labelObject,
+                leaderLineObject: leaderLine,
+                materialKey: context.id,
+            }, 'human_model');
+
+            // 使用与context.id相同的ID覆盖自动生成的ID，以确保能正确找到并更新它
+            this.annotations.delete(newAnnotation.id); // 删除自动生成的
+            newAnnotation.id = summaryId; // 设置为确定性ID
+            this.annotations.set(summaryId, newAnnotation); // 重新插入
         }
+    }
 
-        // 添加指示线
-        if (annotation.leaderLineObject) {
-            annotation.leaderLineObject.userData = userDataPayload;
-            this.sceneController.scene.add(annotation.leaderLineObject);
+    public addPhotoAnnotation(data: Omit<PhotoAnnotation, 'id' | 'type'>): PhotoAnnotation {
+        const id = `photo-${Date.now()}`
+
+        const annotation: PhotoAnnotation = { ...data, id, type: 'photo' }
+        this.annotations.set(id, annotation)
+        console.log(`photo annatation added: ${id}`);
+        return annotation
+    }
+
+    private _formatSummaryText(context: InjuryContext): string {
+        const measurements = context.measurements;
+        let html = `<strong>${context.name}</strong><br>`;
+        if (measurements.cumulativeArea > 0) {
+            html += `累计损伤面积: ${measurements.cumulativeArea.toFixed(2)} cm²<br>`;
         }
-
-        this.annotations.set(id, annotation);
-        console.log("Highlight annotation added:", id);
-        return annotation;
+        if (measurements.cumulativeCurveLength > 0) {
+            html += `累计曲线长度: ${measurements.cumulativeCurveLength.toFixed(2)} cm<br>`;
+        }
+        if (measurements.cumulativeStraightLength > 0) {
+            html += `累计直线长度: ${measurements.cumulativeStraightLength.toFixed(2)} cm<br>`;
+        }
+        if (measurements.bsaPercentage > 0) {
+            html += `占体表面积: ${measurements.bsaPercentage.toFixed(2)}%`;
+        }
+        if (html.endsWith('<br>')) html = html.slice(0, -4);
+        return html;
     }
     // #endregion
 
+
     // #region --- 公共方法：移除标注 ---
+    /**
+    * 移除指定上下文id的所有关联标注
+    * @params contextId 要清楚的上下文id
+    */
+    public removeAnnotationsForContext(contextId: string): void {
+        const idsToRemove: string[] = []
+        this.annotations.forEach((annotation, id) => {
+            if (annotation.contextId === contextId || id === contextId) {
+                idsToRemove.push(id)
+            }
+        })
+        console.log(`AnnotationManager found ${idsToRemove.length} annotations to remove for context:${contextId}`);
+        idsToRemove.forEach(id => this.removeAnnotation(id))
+
+    }
     /**
      * 根据 ID 移除一个标注物。
      * @param id - 要移除的标注物的 ID。
      * @returns 如果成功移除返回 true，否则返回 false。
      */
     public removeAnnotation(id: string): boolean {
-        console.log('开始删除标注:', id);
-        console.log('当前场景中的标注数量:', this.annotations.size);
-        
         const annotation = this.annotations.get(id);
         if (!annotation) {
-            console.warn(`Annotation with ID ${id} not found.`);
             return false;
         }
 
-        console.log('找到标注:', annotation.type);
-
-        switch (annotation.type) {
-            case 'scale_bar':
-                console.log('比例尺对象详情:', {
-                    object3D: annotation.object3D,
-                    type: annotation.object3D.type,
-                    children: annotation.object3D.children,
-                    parent: annotation.object3D.parent,
-                    userData: annotation.object3D.userData
-                });
-                // 检查子对象
-                annotation.object3D.traverse((child: THREE.Object3D) => {
-                    console.log('比例尺子对象:', {
-                        type: child.type,
-                        name: child.name,
-                        parent: child.parent,
-                        userData: child.userData
-                    });
-                    // 确保每个子对象都被正确清理
-                    if ((child as THREE.Mesh).isMesh) {
-                        const mesh = child as THREE.Mesh;
-                        mesh.geometry?.dispose();
-                        this._cleanMaterial(mesh.material);
-                    }
-                });
-                // 从场景中移除整个比例尺对象
-                if (annotation.object3D.parent) {
-                    annotation.object3D.parent.remove(annotation.object3D);
-                }
-                break;
-            case 'surface_curve':
-                this.removeObject(annotation.curveLineObject);
-                this.removeObject(annotation.savedLabelObject); // 新增：移除保存后的标签
-                this.removeObject(annotation.leaderLineObject); // 新增：移除指示线
-                this.removeObject(annotation.proxyObject);
-                break;
-            case 'straight_line':
-                this.removeObject(annotation.lineObject);
-                this.removeObject(annotation.startSphere);
-                this.removeObject(annotation.endSphere);
-                this.removeObject(annotation.lengthLabelObject);
-                this.removeObject(annotation.proxyObject);
-                break;
-            case 'planimetering':
-                console.log('删除面积测量标注:', id);
-                
-                // 删除所有相关对象，确保一次性删除所有视觉元素
-                this.removeObject(annotation.highlightMesh);
-                this.removeObject(annotation.areaLabelObject);
-                this.removeObject(annotation.groupLabel);
-                this.removeObject(annotation.proxyObject);
-                
-                // 删除组标签的代理对象（如果存在）
-                if (annotation.groupProxyObject) {
-                    this.removeObject(annotation.groupProxyObject);
-                    console.log('删除组标签代理对象');
-                }
-                
-                console.log('面积测量标注及其所有相关对象已删除');
-                break;
-        }
+        // --- 核心修正：遍历对象数组并逐个删除 ---
+        const visualObjects = this._getVisualObjects(annotation);
+        visualObjects.forEach(obj => this.removeObject(obj));
+        // --- 核心修正结束 ---
 
         this.annotations.delete(id);
-        console.log('标注已从 Map 中删除');
-        console.log('删除后场景中的标注数量:', this.annotations.size);
+        console.log(`Annotation with ID ${id} and its visual objects removed.`);
         return true;
     }
 
@@ -350,6 +284,45 @@ export class AnnotationManager implements IAnnotationManager {
         ids.forEach(id => this.removeAnnotation(id));
         this.annotations.clear();
         console.log("All annotations removed.");
+    }
+
+    public setAnnotationsVisibility(visibleContextId: string | null): void {
+        const targetId = visibleContextId === null ? 'human_model' : visibleContextId;
+        this.annotations.forEach((annotation) => {
+            const objects = this._getVisualObjects(annotation);
+            // 规则：如果标注的contextId与当前可见的contextId匹配，则显示
+            const isVisible = annotation.contextId === targetId;
+            objects.forEach(obj => {
+                obj.visible = isVisible;
+            });
+        });
+    }
+
+    /**
+     * 设置一个全局的可见性过滤器，可以仅显示比例尺或显示所有。
+     * @param showOnlyScaleBar - 如果为 true，则只显示比例尺，隐藏所有其他标注。如果为 false，则恢复正常的可见性逻辑。
+     */
+    public setGlobalVisibility(filter: AnnotationFilter, visibleContextId: string | null): void {
+        const targetContextId = visibleContextId === null ? 'human_model' : visibleContextId;
+
+        this.annotations.forEach((annotation) => {
+            const visualObjects = this._getVisualObjects(annotation);
+
+            // 1. 先判断标注是否属于当前上下文
+            const isVisibleByContext = annotation.contextId === targetContextId;
+
+            // 2. 如果属于当前上下文，再应用外部传入的过滤器函数
+            const isVisibleByFilter = filter(annotation);
+
+            // 3. 最终的可见性是两者的交集
+            const finalVisibility = isVisibleByContext && isVisibleByFilter;
+
+            visualObjects.forEach(obj => {
+                if (obj) {
+                    obj.visible = finalVisibility;
+                }
+            });
+        });
     }
     // #endregion
 
@@ -409,39 +382,43 @@ export class AnnotationManager implements IAnnotationManager {
      * @param object - 要移除的对象 (可以是 3D 对象或 CSS2DObject)。
      */
     private removeObject(object: THREE.Object3D | CSS2DObject | null | undefined): void {
-        console.log('开始移除对象:', object);
-        if (!object || !object.parent) {
-            console.log('对象不存在或没有父节点');
+        if (!object) {
+            console.log('对象不存在，跳过移除');
             return;
         }
 
+        // 1. 单独处理 CSS2DObject
         if (object instanceof CSS2DObject) {
             console.log('移除 CSS2D 对象');
-            // 移除 CSS2D 对象的 DOM 元素
             if (object.element && object.element.parentElement) {
                 object.element.parentElement.removeChild(object.element);
-                console.log('CSS2D 元素的 DOM 节点已移除');
             }
+            // 从父节点移除
+            if (object.parent) {
+                object.parent.remove(object);
+            }
+            return;
+        }
+
+        // 2. 对于所有 THREE.Object3D 类型的对象（包括其子类）
+        // 使用 traverse 遍历自身及其所有子孙节点
+        console.log('开始移除 Three.js 对象及其子对象:', object);
+        object.traverse((child: THREE.Object3D) => {
+
+            if ((child as THREE.Mesh).isMesh) {
+                const mesh = child as THREE.Mesh
+
+                if (mesh.geometry) mesh.geometry.dispose()
+                if (mesh.material) this._cleanMaterial(mesh.material)
+            }
+        });
+
+        // 3. 最后，在清理完所有子孙节点的资源后，再将顶层对象从其父节点中断开连接
+        if (object.parent) {
+            console.log('将对象从父节点移除:', object);
             object.parent.remove(object);
-            console.log('CSS2D 对象已从场景中移除');
-        } else if (object instanceof THREE.Object3D) {
-            console.log('移除 Three.js 对象');
-            object.parent.remove(object);
-            // 释放 3D 对象的几何体和材质
-            console.log('Three.js 对象已从场景中移除');
-            object.traverse((child: THREE.Object3D) => {
-                const mesh = child as THREE.Mesh;
-                if (mesh.isMesh) {
-                    mesh.geometry?.dispose();
-                    this._cleanMaterial(mesh.material);
-                } else if ((child as THREE.Line).isLine) {
-                    (child as THREE.Line).geometry?.dispose();
-                    this._cleanMaterial((child as THREE.Line).material);
-                }
-            });
         }
     }
-
 
     /** 释放材质及其纹理 */
     private _cleanMaterial(material: THREE.Material | THREE.Material[]): void {
@@ -461,12 +438,98 @@ export class AnnotationManager implements IAnnotationManager {
     }
 
     //类型谓词+类型守卫
-    private isTexture(value:unknown): value is THREE.Texture{
+    private isTexture(value: unknown): value is THREE.Texture {
         return value !== null
             && typeof value === 'object'
             && 'dispose' in value
             && 'isTexture' in value
             && (value as THREE.Texture).isTexture;
+    }
+
+    /**
+     * 用于获取标注的所有视觉对象
+     * @param annotation 
+     * @returns THREE.Object3D[]
+     */
+    private _getVisualObjects(annotation: Annotation): THREE.Object3D[] {
+        const objects: (THREE.Object3D | CSS2DObject | null | undefined)[] = [];
+        switch (annotation.type) {
+            case 'scale_bar':
+                objects.push(annotation.object3D);
+                break;
+            case 'surface_curve':
+                objects.push(annotation.curveLineObject, annotation.savedLabelObject, annotation.leaderLineObject, annotation.proxyObject);
+                break;
+            case 'straight_line':
+                objects.push(annotation.lineObject, annotation.startSphere, annotation.endSphere, annotation.lengthLabelObject, annotation.proxyObject);
+                break;
+            case 'planimetering':
+                objects.push(annotation.highlightMesh, annotation.areaLabelObject, annotation.proxyObject);
+                break;
+            case 'highlight':
+                // 对于高亮标注，我们只控制标签和引导线的显隐，高亮效果由HighlightTool管理
+                objects.push(annotation.labelObject, annotation.leaderLineObject, annotation.proxyObject);
+                break;
+        }
+        return objects.filter((obj): obj is THREE.Object3D => obj != null);
+    }
+
+    private _createAndRegisterAnnotation<T extends Annotation>(
+        baseData: Omit<T, 'id' | 'type' | 'contextId'>,
+        options: {
+            idPrefix: string;
+            type: T['type'];
+            toolMode: ToolMode;
+            contextId: string;
+            getObjects: (annotation: T) => (THREE.Object3D | null | undefined)[];
+            hasLabelProxy?: boolean;
+        }
+    ): T {
+        // 1.生成唯一id
+        const id = `${options.idPrefix}-${Date.now()}`
+
+        // 2.创建完整的标注数据对象
+        const annotation = {
+            ...baseData,
+            id,
+            type: options.type,
+            contextId: options.contextId
+        } as T;
+
+        // 准备userData
+        const userDataPayload = { annotationId: annotation.id, type: options.toolMode }
+
+        // 3.将所有相关对象的3D对象添加到场景，并设置userData
+        const allObjects = options.getObjects(annotation)
+        allObjects.forEach(obj => {
+            if (obj) {
+                obj.traverse((child: THREE.Object3D) => {
+                    child.userData = userDataPayload
+                })
+
+                this.sceneController.scene.add(obj)
+            }
+        })
+
+        // 4.处理代理对象
+        const labelObject = (annotation as any).labelObject ||
+            (annotation as any).lengthLabelObject ||
+            (annotation as any).areaLabelObject ||
+            (annotation as any).savedLabelObject;
+
+        if (options.hasLabelProxy && labelObject) {
+            const proxyMesh = new THREE.Mesh(this.proxyGeometry, this.proxyMaterial)
+            proxyMesh.position.copy(labelObject.position)
+            proxyMesh.userData = userDataPayload
+            this.sceneController.scene.add(proxyMesh);
+
+            (annotation as any).proxyObject = proxyMesh
+        }
+
+        // 5.注册到Map
+        this.annotations.set(id, annotation)
+
+        return annotation
     }
     // #endregion
 }

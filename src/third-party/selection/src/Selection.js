@@ -21,7 +21,7 @@ class Selection {
 		this.dragging = false;
 
 	}
-	handlePointerMove() {}
+	handlePointerMove() { }
 
 	get points() {
 
@@ -29,11 +29,14 @@ class Selection {
 
 	}
 
-	
+	clearPoints() {
+		this.lassoPoints = [];
+	}
+
 	/** Convert absolute screen coordinates `x` and `y` to relative coordinates in range [-1; 1]. */
 	static normalizePoint(x, y, renderer) {
-		const rect = renderer.domElement.getBoundingClientRect();		
-		
+		const rect = renderer.domElement.getBoundingClientRect();
+
 		return [
 			(x / rect.width) * 2 - 1,
 			-((y / rect.height) * 2 - 1),
@@ -57,55 +60,55 @@ export class LassoSelection extends Selection {
 		this.renderer = renderer;
 	}
 
-	handlePointerDown( e ) {
+	handlePointerDown(e) {
 
 		super.handlePointerDown();
 		const rect = this.renderer.domElement.getBoundingClientRect();
-    	this.prevX = e.clientX - rect.left;
-    	this.prevY = e.clientY - rect.top;
+		this.prevX = e.clientX - rect.left;
+		this.prevY = e.clientY - rect.top;
 		this.lassoPoints = [];
 
 	}
 
-	handlePointerMove( e ) {
+	handlePointerMove(e) {
 		const rect = this.renderer.domElement.getBoundingClientRect();
 		const ex = e.clientX - rect.left;
 		const ey = e.clientY - rect.top;
-		const [ nx, ny ] = Selection.normalizePoint( ex, ey, this.renderer );
+		const [nx, ny] = Selection.normalizePoint(ex, ey, this.renderer);
 
 		// If the mouse hasn't moved a lot since the last point
-		if ( Math.abs( ex - this.prevX ) >= 3 || Math.abs( ey - this.prevY ) >= 3 ) {
+		if (Math.abs(ex - this.prevX) >= 3 || Math.abs(ey - this.prevY) >= 3) {
 
 			// Check if the mouse moved in roughly the same direction as the previous point
 			// and replace it if so.
 			const i = this.lassoPoints.length / 3 - 1;
 			const i3 = i * 3;
 			let doReplace = false;
-			if ( this.lassoPoints.length > 3 ) {
+			if (this.lassoPoints.length > 3) {
 
 				// prev segment direction
-				tempVec0.set( this.lassoPoints[ i3 - 3 ], this.lassoPoints[ i3 - 3 + 1 ] );
-				tempVec1.set( this.lassoPoints[ i3 ], this.lassoPoints[ i3 + 1 ] );
-				tempVec1.sub( tempVec0 ).normalize();
+				tempVec0.set(this.lassoPoints[i3 - 3], this.lassoPoints[i3 - 3 + 1]);
+				tempVec1.set(this.lassoPoints[i3], this.lassoPoints[i3 + 1]);
+				tempVec1.sub(tempVec0).normalize();
 
 				// this segment direction
-				tempVec0.set( this.lassoPoints[ i3 ], this.lassoPoints[ i3 + 1 ] );
-				tempVec2.set( nx, ny );
-				tempVec2.sub( tempVec0 ).normalize();
+				tempVec0.set(this.lassoPoints[i3], this.lassoPoints[i3 + 1]);
+				tempVec2.set(nx, ny);
+				tempVec2.sub(tempVec0).normalize();
 
-				const dot = tempVec1.dot( tempVec2 );
+				const dot = tempVec1.dot(tempVec2);
 				doReplace = dot > 0.99;
 
 			}
 
-			if ( doReplace ) {
+			if (doReplace) {
 
-				this.lassoPoints[ i3 ] = nx;
-				this.lassoPoints[ i3 + 1 ] = ny;
+				this.lassoPoints[i3] = nx;
+				this.lassoPoints[i3 + 1] = ny;
 
 			} else {
 
-				this.lassoPoints.push( nx, ny, 0 );
+				this.lassoPoints.push(nx, ny, 0);
 
 			}
 
@@ -143,29 +146,29 @@ export class BoxSelection extends Selection {
 		this.renderer = renderer;
 	}
 
-	handlePointerDown( e ) {
+	handlePointerDown(e) {
 
 		super.handlePointerDown();
 		const rect = this.renderer.domElement.getBoundingClientRect();
-    	this.prevX = e.clientX - rect.left;
-    	this.prevY = e.clientY - rect.top;
-		const [ nx, ny ] = Selection.normalizePoint( this.prevX, this.prevY, this.renderer );
+		this.prevX = e.clientX - rect.left;
+		this.prevY = e.clientY - rect.top;
+		const [nx, ny] = Selection.normalizePoint(this.prevX, this.prevY, this.renderer);
 		this.startX = nx;
 		this.startY = ny;
 		this.lassoPoints = [];
 
 	}
 
-	handlePointerMove( e ) {
+	handlePointerMove(e) {
 		const rect = this.renderer.domElement.getBoundingClientRect();
 		const ex = e.clientX - rect.left;
 		const ey = e.clientY - rect.top;
 
-		const [ nx, ny ] = Selection.normalizePoint( ex, ey, this.renderer );
+		const [nx, ny] = Selection.normalizePoint(ex, ey, this.renderer);
 		this.currentX = nx;
 		this.currentY = ny;
 
-		if ( ex === this.prevX && ey === this.prevY ) {
+		if (ex === this.prevX && ey === this.prevY) {
 
 			return { changed: false };
 
@@ -181,10 +184,10 @@ export class BoxSelection extends Selection {
 	get points() {
 
 		return [
-			[ this.startX, this.startY, 0 ],
-			[ this.currentX, this.startY, 0 ],
-			[ this.currentX, this.currentY, 0 ],
-			[ this.startX, this.currentY, 0 ],
+			[this.startX, this.startY, 0],
+			[this.currentX, this.startY, 0],
+			[this.currentX, this.currentY, 0],
+			[this.startX, this.currentY, 0],
 		].flat();
 
 	}

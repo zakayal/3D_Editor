@@ -4,7 +4,7 @@ import { WebGLMarkingAPI } from '../Context-new/index';
 import { ToolMode } from '../types/webgl-marking';
 import DeleteButton from './DeleteButton'; // 导入删除按钮组件
 //@ts-ignore
-import * as THREE from 'three';
+import * as THREE from '@ys/three';
 
 import { SurfaceMeasurementTool } from '../Tools/surface-measurement/SurfaceMeasurementTool';
 

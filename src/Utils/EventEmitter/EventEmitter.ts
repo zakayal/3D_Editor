@@ -2,7 +2,7 @@
  * @Author: Kaze 3243442830@qq.com
  * @Date: 2025-06-17 20:54:18
  * @LastEditors: Kaze 3243442830@qq.com
- * @LastEditTime: 2025-06-22 21:30:29
+ * @LastEditTime: 2025-07-08 21:22:43
  * @FilePath: \marking\src\Utils\EventEmitter\EventEmitter.ts
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -27,7 +27,6 @@ export class EventEmitter implements IEventEmitter {
         measurementCompleted: [], 
         measurementCancelled: [], // 测量取消事件
         measurementSaved: [], // 测量保存事件
-        measurementsRestored: [], // 测量恢复事件
         error: [], 
         notification: [], 
         ready: [], 
@@ -39,9 +38,20 @@ export class EventEmitter implements IEventEmitter {
 
         //新增
         partSelected:[],
+        partsSelectionChanged:[],
+
         injuryContextAdded:[],
+        injuryDataUpdated:[],
+        injuryModelLoaded:[],
+        injuryContextRemoved:[],
+
+        viewChanged:[],
 
         createHighlightAnnotation: [], // 创建高亮标注指令事件
+
+        // 照片事件
+        photoToolStateChanged:[],
+        photoCaptured:[],
     };
 
     /**
